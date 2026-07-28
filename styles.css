@@ -1,0 +1,204 @@
+/* MyHistory — sidebar timeline, version preview, and settings */
+
+.myhistory-status-error {
+	color: var(--text-error);
+}
+
+/* Settings */
+
+.myhistory-settings-section {
+	margin-bottom: var(--size-4-4);
+}
+
+.myhistory-readonly-setting {
+	color: var(--text-muted);
+}
+
+.myhistory-reset-database-list {
+	margin: var(--size-4-2) 0;
+	padding-left: var(--size-4-5);
+}
+
+.myhistory-reset-scope-note {
+	color: var(--text-muted);
+}
+
+.myhistory-reset-warning {
+	color: var(--text-error);
+}
+
+/* Panel */
+
+.myhistory-panel {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+	padding: var(--size-4-3);
+	overflow-y: auto;
+}
+
+.myhistory-panel-header {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-2-1);
+	padding-bottom: var(--size-4-2);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.myhistory-panel-title {
+	font-weight: var(--font-semibold);
+	overflow-wrap: anywhere;
+}
+
+.myhistory-panel-path,
+.myhistory-panel-summary,
+.myhistory-panel-renames {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	overflow-wrap: anywhere;
+}
+
+.myhistory-panel-badge {
+	align-self: flex-start;
+	padding: 0 var(--size-2-2);
+	border-radius: var(--radius-s);
+	background-color: var(--background-modifier-error);
+	color: var(--text-on-accent);
+	font-size: var(--font-ui-smaller);
+}
+
+.myhistory-panel-message {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.myhistory-panel-footer {
+	padding-top: var(--size-4-2);
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.myhistory-panel-footer button {
+	width: 100%;
+}
+
+/* Version list */
+
+.myhistory-version-list {
+	display: flex;
+	flex-direction: column;
+}
+
+.myhistory-version-row {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-2);
+	border-radius: var(--radius-s);
+}
+
+.myhistory-version-row:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+.myhistory-version-row-current .myhistory-version-date {
+	font-weight: var(--font-semibold);
+}
+
+.myhistory-version-open {
+	display: flex;
+	flex: 1;
+	align-items: baseline;
+	gap: var(--size-2-2);
+	min-width: 0;
+	padding: var(--size-2-2) var(--size-2-2);
+	cursor: var(--cursor-link);
+}
+
+.myhistory-version-open:focus-visible {
+	box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
+	outline: none;
+}
+
+.myhistory-version-date {
+	flex: 1;
+	min-width: 0;
+	font-size: var(--font-ui-small);
+	white-space: nowrap;
+}
+
+.myhistory-version-event {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	white-space: nowrap;
+}
+
+.myhistory-version-event-deleted {
+	color: var(--text-error);
+}
+
+.myhistory-version-event-restored,
+.myhistory-version-event-baseline {
+	color: var(--text-accent);
+}
+
+.myhistory-version-size {
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	white-space: nowrap;
+}
+
+.myhistory-version-pin {
+	display: flex;
+	align-items: center;
+	padding: var(--size-2-1);
+	border-radius: var(--radius-s);
+	color: var(--text-faint);
+	cursor: var(--cursor-link);
+}
+
+.myhistory-version-pin:hover {
+	color: var(--text-normal);
+}
+
+.myhistory-version-pinned {
+	color: var(--text-accent);
+}
+
+.myhistory-version-pin .svg-icon {
+	width: var(--icon-s);
+	height: var(--icon-s);
+}
+
+/* Preview modal */
+
+.myhistory-preview-modal {
+	max-width: min(48rem, 90vw);
+}
+
+.myhistory-preview-meta {
+	display: flex;
+	justify-content: space-between;
+	gap: var(--size-4-2);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	overflow-wrap: anywhere;
+}
+
+.myhistory-preview-content {
+	max-height: 50vh;
+	margin: var(--size-4-3) 0;
+	padding: var(--size-4-2) var(--size-4-3);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background-color: var(--background-secondary);
+	overflow-y: auto;
+}
+
+.myhistory-preview-empty {
+	color: var(--text-faint);
+	font-style: italic;
+}
+
+.myhistory-preview-note {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
