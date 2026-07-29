@@ -21,6 +21,7 @@ import { isLoggerLevel, Logger } from "./utils/logger";
 import { VersionPreviewModal } from "./version-preview-modal";
 
 const IDLE_STATUS_DELAY_MS = 5000;
+const logger = new Logger("Plugin");
 const STRING_SETTING_KEYS = [
 	"localVaultId",
 	"customHistoryFolder",
@@ -36,37 +37,44 @@ interface HistoryStatusView {
 
 export default class MyHistoryPlugin extends Plugin {
 	settings!: MyHistorySettings;
-	private store!: PouchDbHistoryStore;
-	private historyService!: HistoryService;
-	private statusBarEl!: HTMLElement;
+	private historyService: HistoryService | null = null;
+	private statusBarEl: HTMLElement | null = null;
+	private unloading = false;
 	private idleStatusTimer: number | null = null;
 	private previewModal: VersionPreviewModal | null = null;
 	private localDatabaseResetModal: LocalDatabaseResetModal | null = null;
 
 	async onload() {
+		this.unloading = false;
 		Logger.configureFileLogging(this.app.vault.adapter, this.getPluginDir());
 
 		await this.loadSettings();
 
-		this.statusBarEl = this.addStatusBarItem();
-		this.statusBarEl.addEventListener("click", () => void this.openHistoryPanel());
+		if (this.unloading) {
+			return;
+		}
+
+		const statusBarEl = this.addStatusBarItem();
+		this.statusBarEl = statusBarEl;
+		statusBarEl.addEventListener("click", () => void this.openHistoryPanel());
 		this.updateStatus({ state: "idle" });
 
-		this.store = new PouchDbHistoryStore(
+		const store = new PouchDbHistoryStore(
 			createHistoryDatabaseName(this.settings.localVaultId)
 		);
-		this.historyService = new HistoryService(
+		const historyService = new HistoryService(
 			this.app,
-			this.store,
+			store,
 			() => this.settings,
 			(status) => this.updateStatus(status),
 			(operation) => this.saveCompletedOperation(operation),
 			(fileId) => this.handleHistoryChanged(fileId)
 		);
+		this.historyService = historyService;
 
 		this.registerView(
 			HISTORY_VIEW_TYPE,
-			(leaf) => new HistoryPanelView(leaf, this.historyService, {
+			(leaf) => new HistoryPanelView(leaf, historyService, {
 				getMaxVersionsPerNote: () => this.settings.maxVersionsPerNote,
 				openVersion: (version, note) => this.openVersionPreview(version, note),
 				captureActiveNote: () => this.captureActiveNote(),
@@ -99,7 +107,7 @@ export default class MyHistoryPlugin extends Plugin {
 			id: "scan-notes",
 			name: "Scan notes for missing versions",
 			callback: () => {
-				void this.historyService.reconcile();
+				void historyService.reconcile();
 			}
 		});
 
@@ -114,40 +122,48 @@ export default class MyHistoryPlugin extends Plugin {
 		this.addSettingTab(new MyHistorySettingTab(this.app, this));
 
 		this.app.workspace.onLayoutReady(() => {
+			if (this.unloading) {
+				return;
+			}
+
 			this.registerEvent(
 				this.app.vault.on("create",
-					(file) => this.historyService.queueCapture(file)
+					(file) => historyService.queueCapture(file)
 				)
 			);
 
 			this.registerEvent(
 				this.app.vault.on("modify",
-					(file) => this.historyService.queueCapture(file)
+					(file) => historyService.queueCapture(file)
 				)
 			);
 
 			this.registerEvent(
 				this.app.vault.on("rename",
-					(file, oldPath) => void this.historyService.handleRenamedFile(file, oldPath)
+					(file, oldPath) => void historyService.handleRenamedFile(file, oldPath)
 				)
 			);
 
 			this.registerEvent(
 				this.app.vault.on("delete",
-					(file) => void this.historyService.handleDeletedFile(file)
+					(file) => void historyService.handleDeletedFile(file)
 				)
 			);
 
-			void this.historyService.initialize();
+			void historyService.initialize();
 		});
 	}
 
 	onunload() {
+		this.unloading = true;
 		this.clearIdleStatusTimer();
 		this.previewModal?.close();
 		this.localDatabaseResetModal?.close();
-		this.historyService.close();
-		void Logger.flush();
+
+		const historyService = this.historyService;
+		this.historyService = null;
+		this.statusBarEl = null;
+		void this.closeResources(historyService);
 		// Obsidian automatically disposes registered events, views, and commands.
 	}
 
@@ -180,18 +196,20 @@ export default class MyHistoryPlugin extends Plugin {
 	}
 
 	async applyRetention() {
-		await this.historyService.applyRetention();
+		await this.historyService?.applyRetention();
 	}
 
 	openLocalDatabaseResetModal() {
-		if (this.localDatabaseResetModal) {
+		const historyService = this.historyService;
+
+		if (this.localDatabaseResetModal || !historyService) {
 			return;
 		}
 
 		this.localDatabaseResetModal = new LocalDatabaseResetModal(
 			this.app,
 			this.getHistoryDatabaseName(),
-			() => this.historyService.resetDatabase(),
+			() => historyService.resetDatabase(),
 			() => {
 				this.localDatabaseResetModal = null;
 			}
@@ -215,14 +233,15 @@ export default class MyHistoryPlugin extends Plugin {
 	}
 
 	private async captureActiveNote() {
+		const historyService = this.historyService;
 		const activeFile = this.app.workspace.getActiveFile();
 
-		if (!(activeFile instanceof TFile)) {
+		if (!historyService || !(activeFile instanceof TFile)) {
 			new Notice("Open a note to capture a version.");
 			return;
 		}
 
-		const outcome = await this.historyService.captureFile(activeFile);
+		const outcome = await historyService.captureFile(activeFile);
 
 		if (!outcome) {
 			new Notice("MyHistory does not track this file.");
@@ -235,7 +254,7 @@ export default class MyHistoryPlugin extends Plugin {
 	}
 
 	private async toggleVersionProtection(versionId: string, isProtected: boolean) {
-		const version = await this.historyService.setVersionProtected(versionId, isProtected);
+		const version = await this.historyService?.setVersionProtected(versionId, isProtected);
 
 		if (!version) {
 			new Notice("MyHistory could not update the selected version.");
@@ -243,13 +262,19 @@ export default class MyHistoryPlugin extends Plugin {
 	}
 
 	private openVersionPreview(version: NoteVersionRecord, note: NoteRecord | null) {
+		const historyService = this.historyService;
+
+		if (!historyService) {
+			return;
+		}
+
 		this.previewModal?.close();
 		this.previewModal = new VersionPreviewModal(
 			this.app,
 			version,
 			note,
 			async (versionId) => {
-				await this.historyService.restoreVersion(versionId);
+				await historyService.restoreVersion(versionId);
 			},
 			() => {
 				this.previewModal = null;
@@ -259,6 +284,10 @@ export default class MyHistoryPlugin extends Plugin {
 	}
 
 	private handleHistoryChanged(fileId: string | null) {
+		if (this.unloading) {
+			return;
+		}
+
 		for (const leaf of this.app.workspace.getLeavesOfType(HISTORY_VIEW_TYPE)) {
 			const { view } = leaf;
 
@@ -269,6 +298,10 @@ export default class MyHistoryPlugin extends Plugin {
 	}
 
 	private async saveCompletedOperation(operation: CompletedHistoryOperation) {
+		if (this.unloading) {
+			return;
+		}
+
 		if (operation === "reconcile") {
 			this.settings.lastReconciliationAt = new Date().toISOString();
 		} else if (operation === "resetDatabase") {
@@ -281,14 +314,20 @@ export default class MyHistoryPlugin extends Plugin {
 	}
 
 	private updateStatus(status: HistoryStatus) {
+		const statusBarEl = this.statusBarEl;
+
+		if (this.unloading || !statusBarEl) {
+			return;
+		}
+
 		this.clearIdleStatusTimer();
-		this.statusBarEl.empty();
-		this.statusBarEl.addClass("myhistory-status");
+		statusBarEl.empty();
+		statusBarEl.addClass("myhistory-status");
 
 		const view = createStatusView(status);
-		this.statusBarEl.setText(view.text);
-		this.statusBarEl.title = view.title;
-		this.statusBarEl.toggleClass("myhistory-status-error", status.state === "error");
+		statusBarEl.setText(view.text);
+		statusBarEl.title = view.title;
+		statusBarEl.toggleClass("myhistory-status-error", status.state === "error");
 
 		if (view.returnToIdle) {
 			this.scheduleIdleStatus();
@@ -309,6 +348,16 @@ export default class MyHistoryPlugin extends Plugin {
 
 		window.clearTimeout(this.idleStatusTimer);
 		this.idleStatusTimer = null;
+	}
+
+	private async closeResources(historyService: HistoryService | null) {
+		try {
+			await historyService?.close();
+		} catch (error) {
+			logger.error("History service close failed", error);
+		} finally {
+			await Logger.flush();
+		}
 	}
 
 	private getPluginDir() {

@@ -77,6 +77,7 @@ export class HistoryService {
 	private suppressedPaths = new Set<string>();
 	private captureInProgress = false;
 	private operationInProgress = false;
+	private closed = false;
 
 	constructor(
 		private app: App,
@@ -90,7 +91,7 @@ export class HistoryService {
 	}
 
 	async initialize() {
-		if (!this.getSettings().reconcileOnStartup) {
+		if (this.closed || !this.getSettings().reconcileOnStartup) {
 			return;
 		}
 
@@ -119,7 +120,7 @@ export class HistoryService {
 	 * a long editing session still produces versions.
 	 */
 	queueCapture(abstractFile: TAbstractFile) {
-		if (!(abstractFile instanceof TFile) || !this.isTrackedFile(abstractFile)) {
+		if (this.closed || !(abstractFile instanceof TFile) || !this.isTrackedFile(abstractFile)) {
 			return;
 		}
 
@@ -158,7 +159,7 @@ export class HistoryService {
 
 	/** Captures the current content of a note immediately. */
 	async captureFile(file: TFile, event: NoteVersionEvent = "modified") {
-		if (!this.isTrackedFile(file)) {
+		if (this.closed || !this.isTrackedFile(file)) {
 			return null;
 		}
 
@@ -172,6 +173,10 @@ export class HistoryService {
 	}
 
 	async handleRenamedFile(abstractFile: TAbstractFile, oldPath: string) {
+		if (this.closed) {
+			return;
+		}
+
 		if (abstractFile instanceof TFolder) {
 			await this.handleRenamedFolder(abstractFile, oldPath);
 			return;
@@ -215,6 +220,10 @@ export class HistoryService {
 	}
 
 	async handleDeletedFile(abstractFile: TAbstractFile) {
+		if (this.closed) {
+			return;
+		}
+
 		if (abstractFile instanceof TFolder) {
 			await this.recordDeletionForFolder(abstractFile.path);
 			return;
@@ -230,23 +239,40 @@ export class HistoryService {
 	}
 
 	async getTimelineForPath(path: string): Promise<NoteTimeline | null> {
+		if (this.closed) {
+			return null;
+		}
+
 		const note = await this.store.getNoteByPath(path);
-		return note ? this.getTimelineForNote(note) : null;
+		return !this.closed && note ? this.getTimelineForNote(note) : null;
 	}
 
 	async getTimelineForFileId(fileId: string): Promise<NoteTimeline | null> {
+		if (this.closed) {
+			return null;
+		}
+
 		const note = await this.store.getNote(fileId);
-		return note ? this.getTimelineForNote(note) : null;
+		return !this.closed && note ? this.getTimelineForNote(note) : null;
 	}
 
 	async getVersion(versionId: string) {
-		return this.store.getVersion(versionId);
+		if (this.closed) {
+			return null;
+		}
+
+		const version = await this.store.getVersion(versionId);
+		return this.closed ? null : version;
 	}
 
 	async setVersionProtected(versionId: string, isProtected: boolean) {
+		if (this.closed) {
+			return null;
+		}
+
 		const version = await this.store.setVersionProtected(versionId, isProtected);
 
-		if (version) {
+		if (version && !this.closed) {
 			this.onHistoryChanged(version.fileId);
 		}
 
@@ -258,7 +284,15 @@ export class HistoryService {
 	 * captured first, so restoring never destroys the current state.
 	 */
 	async restoreVersion(versionId: string): Promise<RestoreVersionResult | null> {
+		if (this.closed) {
+			return null;
+		}
+
 		const version = await this.store.getVersion(versionId);
+
+		if (this.closed) {
+			return null;
+		}
 
 		if (!version) {
 			new Notice("MyHistory could not find the selected version.");
@@ -266,6 +300,10 @@ export class HistoryService {
 		}
 
 		const actualHash = await createTextContentHash(version.content);
+
+		if (this.closed) {
+			return null;
+		}
 
 		if (actualHash !== version.contentHash) {
 			logger.error("Stored version failed its integrity check", undefined, {
@@ -281,6 +319,11 @@ export class HistoryService {
 		}
 
 		const note = await this.store.getNote(version.fileId);
+
+		if (this.closed) {
+			return null;
+		}
+
 		const targetPath = note?.path ?? version.path;
 
 		this.operationInProgress = true;
@@ -297,6 +340,11 @@ export class HistoryService {
 
 			if (existingFile instanceof TFile) {
 				await this.captureNoteFile(existingFile, "modified");
+
+				if (this.closed) {
+					return null;
+				}
+
 				await this.app.vault.modify(existingFile, version.content);
 			} else {
 				await this.ensureParentFolderExists(targetPath);
@@ -339,6 +387,10 @@ export class HistoryService {
 	 * that disappeared while Obsidian was closed get a deletion event.
 	 */
 	async reconcile() {
+		if (this.closed) {
+			return null;
+		}
+
 		if (this.operationInProgress) {
 			new Notice("MyHistory is already running an operation.");
 			return null;
@@ -359,6 +411,10 @@ export class HistoryService {
 
 		try {
 			for (const [index, file] of notes.entries()) {
+				if (this.closed) {
+					return null;
+				}
+
 				this.onStatusChange({
 					state: "reconciling",
 					current: index + 1,
@@ -373,6 +429,11 @@ export class HistoryService {
 			}
 
 			const deleted = await this.recordMissingNoteDeletions(historyFolder, notes);
+
+			if (this.closed) {
+				return null;
+			}
+
 			this.onStatusChange({
 				state: "reconciled",
 				tracked: notes.length,
@@ -404,6 +465,10 @@ export class HistoryService {
 
 	/** Applies the retention limit to every note, after the limit changes. */
 	async applyRetention() {
+		if (this.closed) {
+			return null;
+		}
+
 		if (this.operationInProgress) {
 			new Notice("MyHistory is already running an operation.");
 			return null;
@@ -418,11 +483,19 @@ export class HistoryService {
 			let removed = 0;
 
 			for (const note of notes) {
+				if (this.closed) {
+					return null;
+				}
+
 				const prunedVersionIds = await this.store.pruneVersions(
 					note.fileId,
 					maxVersionsPerNote
 				);
 				removed += prunedVersionIds.length;
+			}
+
+			if (this.closed) {
+				return null;
 			}
 
 			this.onStatusChange({ state: "pruned", removed });
@@ -443,6 +516,10 @@ export class HistoryService {
 	}
 
 	async resetDatabase(): Promise<boolean> {
+		if (this.closed) {
+			return false;
+		}
+
 		if (this.operationInProgress) {
 			new Notice("MyHistory is already running an operation.");
 			return false;
@@ -454,6 +531,11 @@ export class HistoryService {
 
 		try {
 			await this.store.reset();
+
+			if (this.closed) {
+				return false;
+			}
+
 			this.onStatusChange({ state: "database-reset" });
 			await this.onOperationCompleted("resetDatabase");
 			this.onHistoryChanged(null);
@@ -474,6 +556,10 @@ export class HistoryService {
 
 	/** Captures every note that is waiting on its debounce timer. */
 	async flushPendingCaptures() {
+		if (this.closed) {
+			return;
+		}
+
 		const paths = Array.from(this.pendingCaptures.keys());
 
 		for (const path of paths) {
@@ -482,9 +568,10 @@ export class HistoryService {
 		}
 	}
 
-	close() {
+	async close() {
+		this.closed = true;
 		this.clearPendingCaptures();
-		void this.store.close();
+		await this.store.close();
 	}
 
 	private async getTimelineForNote(note: NoteRecord): Promise<NoteTimeline> {
@@ -495,10 +582,19 @@ export class HistoryService {
 	}
 
 	private async runPendingCapture(path: string) {
+		if (this.closed) {
+			return;
+		}
+
 		this.captureInProgress = true;
 
 		try {
 			await this.captureNoteAtPath(path);
+
+			if (this.closed) {
+				return;
+			}
+
 			this.onStatusChange({
 				state: "captured",
 				total: 1,
@@ -514,7 +610,7 @@ export class HistoryService {
 		} finally {
 			this.captureInProgress = false;
 
-			if (this.pendingCaptures.size > 0) {
+			if (!this.closed && this.pendingCaptures.size > 0) {
 				this.onStatusChange({
 					state: "queued",
 					pending: this.pendingCaptures.size
@@ -527,12 +623,22 @@ export class HistoryService {
 		file: TFile,
 		event: NoteVersionEvent
 	): Promise<CaptureOutcome | null> {
-		if (!this.isTrackedFile(file)) {
+		if (this.closed || !this.isTrackedFile(file)) {
 			return null;
 		}
 
 		const { content, contentHash } = await readNoteContent(this.app, file);
+
+		if (this.closed) {
+			return null;
+		}
+
 		const existingNote = await this.store.getNoteByPath(file.path);
+
+		if (this.closed) {
+			return null;
+		}
+
 		const fileId = existingNote?.fileId ?? createFileId();
 		const resolvedEvent = resolveCaptureEvent(event, existingNote);
 		const result = await this.store.captureVersion(
@@ -550,7 +656,7 @@ export class HistoryService {
 			this.getMaxVersionsPerNote()
 		);
 
-		if (result.captured) {
+		if (result.captured && !this.closed) {
 			await this.onOperationCompleted("capture");
 			this.onHistoryChanged(fileId);
 		}
@@ -565,7 +671,7 @@ export class HistoryService {
 	private async recordDeletionForPath(path: string) {
 		const note = await this.store.getNoteByPath(path);
 
-		if (!note) {
+		if (this.closed || !note) {
 			return;
 		}
 
@@ -585,6 +691,10 @@ export class HistoryService {
 		const notes = await this.store.listNotes();
 
 		for (const note of notes) {
+			if (this.closed) {
+				return;
+			}
+
 			if (note.deleted || !note.path.startsWith(prefix)) {
 				continue;
 			}
@@ -600,6 +710,10 @@ export class HistoryService {
 		const notes = await this.store.listNotes();
 
 		for (const note of notes) {
+			if (this.closed) {
+				return;
+			}
+
 			if (note.deleted || !note.path.startsWith(prefix)) {
 				continue;
 			}
@@ -623,6 +737,10 @@ export class HistoryService {
 		let deleted = 0;
 
 		for (const note of storedNotes) {
+			if (this.closed) {
+				return deleted;
+			}
+
 			if (note.deleted || trackedPaths.has(note.path)) {
 				continue;
 			}

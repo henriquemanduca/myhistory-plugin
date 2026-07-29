@@ -584,6 +584,44 @@ describe("initialize", () => {
 		await fixture.service.initialize();
 		expect(await fixture.store.listNotes()).toHaveLength(1);
 	});
+
+	it("stops startup work when the service closes", async () => {
+		const fixture = createFixture({ reconcileOnStartup: true });
+		fixture.vault.createNote("Notes/One.md", "one");
+
+		const initialization = fixture.service.initialize();
+		await fixture.service.close();
+		await initialization;
+
+		expect(await fixture.store.listNotes()).toEqual([]);
+		expect(fixture.completedOperations).not.toContain("reconcile");
+		expect(fixture.statuses).not.toContainEqual(expect.objectContaining({
+			state: "reconciled"
+		}));
+	});
+
+	it("does not accept new work after it closes", async () => {
+		const fixture = createFixture();
+		const file = fixture.vault.createNote("Notes/One.md", "one");
+
+		await fixture.service.close();
+
+		expect(await fixture.service.captureFile(file)).toBeNull();
+		expect(await fixture.service.reconcile()).toBeNull();
+		expect(await fixture.store.listNotes()).toEqual([]);
+	});
+
+	it("does not reopen the database for reads after it closes", async () => {
+		const fixture = createFixture();
+		fixture.vault.createNote("Notes/One.md", "one");
+		await fixture.service.captureNoteAtPath("Notes/One.md");
+
+		await fixture.service.close();
+
+		expect(await fixture.service.getTimelineForPath("Notes/One.md")).toBeNull();
+		expect(await fixture.service.getTimelineForFileId("file-1")).toBeNull();
+		expect(await fixture.service.getVersion("version-1")).toBeNull();
+	});
 });
 
 describe("stored content integrity", () => {
