@@ -1,5 +1,14 @@
-import { Notice, Plugin, TFile } from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
+import { Notice, Plugin, TFile } from "obsidian";
+import { HISTORY_VIEW_TYPE, HistoryPanelView } from "./history-panel-view";
+import {
+	HistoryService,
+	type CompletedHistoryOperation,
+	type HistoryStatus
+} from "./history/history-service";
+import { PouchDbHistoryStore } from "./history/pouchdb-store";
+import type { NoteRecord, NoteVersionRecord } from "./history/types";
+import { LocalDatabaseResetModal } from "./local-database-reset-modal";
 import {
 	DEFAULT_SETTINGS,
 	isHistoryFolderMode,
@@ -8,26 +17,14 @@ import {
 	normalizeMaxVersionsPerNote,
 	type MyHistorySettings
 } from "./settings";
-import { PouchDbHistoryStore } from "./history/pouchdb-store";
-import {
-	HistoryService,
-	type CompletedHistoryOperation,
-	type HistoryStatus
-} from "./history/history-service";
-import type { NoteRecord, NoteVersionRecord } from "./history/types";
-import { HISTORY_VIEW_TYPE, HistoryPanelView } from "./history-panel-view";
-import { VersionPreviewModal } from "./version-preview-modal";
-import { LocalDatabaseResetModal } from "./local-database-reset-modal";
-import { formatDateTime } from "./utils/date-format";
 import { isLoggerLevel, Logger } from "./utils/logger";
+import { VersionPreviewModal } from "./version-preview-modal";
 
 const IDLE_STATUS_DELAY_MS = 5000;
 const STRING_SETTING_KEYS = [
 	"localVaultId",
 	"customHistoryFolder",
-	"lastCaptureAt",
 	"lastReconciliationAt",
-	"lastRestoreAt",
 	"lastDatabaseResetAt"
 ] as const;
 
@@ -234,7 +231,7 @@ export default class MyHistoryPlugin extends Plugin {
 
 		new Notice(outcome.captured
 			? `MyHistory captured a version of ${activeFile.name}.`
-			: "No changes since the last stored version.");
+			: "No changes.");
 	}
 
 	private async toggleVersionProtection(versionId: string, isProtected: boolean) {
@@ -272,16 +269,12 @@ export default class MyHistoryPlugin extends Plugin {
 	}
 
 	private async saveCompletedOperation(operation: CompletedHistoryOperation) {
-		const completedAt = new Date().toISOString();
-
-		if (operation === "capture") {
-			this.settings.lastCaptureAt = completedAt;
-		} else if (operation === "reconcile") {
-			this.settings.lastReconciliationAt = completedAt;
-		} else if (operation === "restore") {
-			this.settings.lastRestoreAt = completedAt;
+		if (operation === "reconcile") {
+			this.settings.lastReconciliationAt = new Date().toISOString();
+		} else if (operation === "resetDatabase") {
+			this.settings.lastDatabaseResetAt = new Date().toISOString();
 		} else {
-			this.settings.lastDatabaseResetAt = completedAt;
+			return;
 		}
 
 		await this.saveSettings();
@@ -292,7 +285,7 @@ export default class MyHistoryPlugin extends Plugin {
 		this.statusBarEl.empty();
 		this.statusBarEl.addClass("myhistory-status");
 
-		const view = createStatusView(status, this.settings);
+		const view = createStatusView(status);
 		this.statusBarEl.setText(view.text);
 		this.statusBarEl.title = view.title;
 		this.statusBarEl.toggleClass("myhistory-status-error", status.state === "error");
@@ -389,19 +382,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
 
-function createStatusView(
-	status: HistoryStatus,
-	settings: MyHistorySettings
-): HistoryStatusView {
+function createStatusView(status: HistoryStatus): HistoryStatusView {
 	switch (status.state) {
 		case "idle": {
-			const lastCaptureAt = formatDateTime(settings.lastCaptureAt, { includeTime: true });
-
 			return {
-				text: lastCaptureAt ? lastCaptureAt : "...",
-				title: lastCaptureAt
-					? `MyHistory last captured a version at ${lastCaptureAt}`
-					: "MyHistory has not captured a version yet"
+				text: "",
+				title: ""
 			};
 		}
 

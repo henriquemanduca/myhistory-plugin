@@ -39,9 +39,7 @@ function createFixture(overrides: Partial<MyHistorySettings> = {}): Fixture {
 		captureDebounceSeconds: 15,
 		reconcileOnStartup: true,
 		logLevel: "off",
-		lastCaptureAt: "",
 		lastReconciliationAt: "",
-		lastRestoreAt: "",
 		lastDatabaseResetAt: "",
 		...overrides
 	};

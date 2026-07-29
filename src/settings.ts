@@ -26,9 +26,7 @@ export interface MyHistorySettings {
 	captureDebounceSeconds: number;
 	reconcileOnStartup: boolean;
 	logLevel: LoggerLevel;
-	lastCaptureAt: string;
 	lastReconciliationAt: string;
-	lastRestoreAt: string;
 	lastDatabaseResetAt: string;
 }
 
@@ -40,16 +38,12 @@ export const DEFAULT_SETTINGS: MyHistorySettings = {
 	captureDebounceSeconds: 15,
 	reconcileOnStartup: true,
 	logLevel: "info",
-	lastCaptureAt: "",
 	lastReconciliationAt: "",
-	lastRestoreAt: "",
 	lastDatabaseResetAt: ""
 };
 
 type ReadonlyDateSettingKey =
-	| "lastCaptureAt"
 	| "lastReconciliationAt"
-	| "lastRestoreAt"
 	| "lastDatabaseResetAt";
 
 export function isHistoryFolderMode(value: unknown): value is HistoryFolderMode {
@@ -189,19 +183,9 @@ export class MyHistorySettingTab extends PluginSettingTab {
 						}
 					},
 					this.createReadonlyDateSetting(
-						"Last captured version",
-						"Last time a note version was stored.",
-						"lastCaptureAt"
-					),
-					this.createReadonlyDateSetting(
 						"Last vault scan",
 						"Last successful comparison between tracked notes and their history.",
 						"lastReconciliationAt"
-					),
-					this.createReadonlyDateSetting(
-						"Last restore",
-						"Last time a stored version was written back to the vault.",
-						"lastRestoreAt"
 					),
 					this.createReadonlyDateSetting(
 						"Last database reset",
