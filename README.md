@@ -29,7 +29,7 @@ request.
 
 ## Requirements
 
-- Obsidian `1.12.7` or newer.
+- Obsidian `1.13.0` or newer.
 - Node.js `22.22.0` or newer for development builds.
 
 MyHistory has no external dependencies to configure. The local database is

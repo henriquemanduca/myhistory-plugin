@@ -124,13 +124,13 @@ export class HistoryPanelView extends ItemView {
 		const title = note?.fileName
 			?? (this.activePath ? this.activePath.slice(this.activePath.lastIndexOf("/") + 1) : "No note open");
 
-		headerEl.createEl("div", {
+		headerEl.createDiv({
 			cls: "myhistory-panel-title",
 			text: title
 		});
 
 		if (this.activePath) {
-			headerEl.createEl("div", {
+			headerEl.createDiv({
 				cls: "myhistory-panel-path",
 				text: this.activePath
 			});
@@ -146,13 +146,13 @@ export class HistoryPanelView extends ItemView {
 			? ` · limit ${maxVersionsPerNote}`
 			: " · no limit";
 
-		headerEl.createEl("div", {
+		headerEl.createDiv({
 			cls: "myhistory-panel-summary",
 			text: `${versionCount} ${versionCount === 1 ? "version" : "versions"}${limitLabel}`
 		});
 
 		if (note.deleted) {
-			headerEl.createEl("div", {
+			headerEl.createDiv({
 				cls: "myhistory-panel-badge",
 				text: `Deleted ${formatDateTime(note.deletedAt ?? "")}`.trim()
 			});
@@ -162,14 +162,14 @@ export class HistoryPanelView extends ItemView {
 	}
 
 	private renderRenameSummary(headerEl: HTMLElement, note: NoteRecord) {
-		const lastChange = note.pathHistory.at(-1);
+		const lastChange = note.pathHistory[note.pathHistory.length - 1];
 
 		if (!lastChange) {
 			return;
 		}
 
 		const renameCount = note.pathHistory.length;
-		const summaryEl = headerEl.createEl("div", { cls: "myhistory-panel-renames" });
+		const summaryEl = headerEl.createDiv({ cls: "myhistory-panel-renames" });
 		summaryEl.setText(
 			renameCount === 1
 				? `Renamed once · was ${lastChange.previousPath}`
