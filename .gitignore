@@ -1,0 +1,10 @@
+node_modules/
+main.js
+dist/
+coverage/
+*.hot-update.*
+data.json
+.DS_Store
+.codex
+.idea
+.env
