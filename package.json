@@ -1,6 +1,6 @@
 {
 	"name": "myhistory",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "An Obsidian plugin that keeps a local, private version history for your notes.",
 	"main": "main.js",
 	"type": "module",
