@@ -1,6 +1,9 @@
-import { App, PluginSettingTab } from "obsidian";
+import { App, PluginSettingTab, SettingGroup } from "obsidian";
 import type {
+	Setting,
+	SettingControl,
 	SettingDefinition,
+	SettingDefinitionGroup,
 	SettingDefinitionItem
 } from "obsidian";
 import type MyHistoryPlugin from "./main";
@@ -70,7 +73,11 @@ export function normalizeCaptureDebounceSeconds(value: unknown) {
 	);
 }
 
-/** Settings rendered declaratively by Obsidian from a single definition tree. */
+/**
+ * Settings are declared once in {@link getSettingDefinitions}. Obsidian 1.13
+ * and newer render them natively; {@link display} renders the same definitions
+ * imperatively so the plugin still works on the declared `minAppVersion`.
+ */
 export class MyHistorySettingTab extends PluginSettingTab {
 	plugin: MyHistoryPlugin;
 
@@ -223,7 +230,7 @@ export class MyHistorySettingTab extends PluginSettingTab {
 
 				this.plugin.settings.historyFolderMode = value;
 				await this.plugin.saveSettings();
-				this.refreshDomState();
+				this.refreshRenderedState();
 				return;
 			}
 			case "customHistoryFolder":
@@ -249,6 +256,146 @@ export class MyHistorySettingTab extends PluginSettingTab {
 		await this.plugin.saveSettings();
 	}
 
+	/**
+	 * Fallback rendering for Obsidian versions older than 1.13.0, which ignore
+	 * {@link getSettingDefinitions} and call this instead.
+	 */
+	display(): void {
+		this.containerEl.empty();
+		let looseGroup: SettingGroup | null = null;
+
+		for (const definition of this.getSettingDefinitions()) {
+			if (isSettingDefinitionGroup(definition)) {
+				looseGroup = null;
+				this.renderGroupFallback(definition);
+				continue;
+			}
+
+			if (!isSettingDefinition(definition)) {
+				continue;
+			}
+
+			looseGroup ??= new SettingGroup(this.containerEl)
+				.addClass("myhistory-settings-section");
+			this.renderSettingFallback(looseGroup, definition);
+		}
+	}
+
+	private renderGroupFallback(group: SettingDefinitionGroup) {
+		if (!isVisible(group.visible)) {
+			return;
+		}
+
+		const settingGroup = new SettingGroup(this.containerEl)
+			.addClass(group.cls ?? "myhistory-settings-section");
+
+		if (group.heading) {
+			settingGroup.setHeading(group.heading);
+		}
+
+		for (const item of group.items ?? []) {
+			if (isSettingDefinition(item)) {
+				this.renderSettingFallback(settingGroup, item);
+			}
+		}
+	}
+
+	private renderSettingFallback(group: SettingGroup, definition: SettingDefinition) {
+		if (!isVisible(definition.visible)) {
+			return;
+		}
+
+		group.addSetting((setting) => {
+			setting.setName(definition.name);
+
+			if (definition.desc) {
+				setting.setDesc(definition.desc);
+			}
+
+			if (definition.render) {
+				definition.render(setting, group);
+				return;
+			}
+
+			if (definition.action) {
+				const action = definition.action;
+				setting.addButton((button) => button
+					.setButtonText(definition.name)
+					.setDisabled(isDisabled(definition.disabled))
+					.onClick(() => action(setting.settingEl, 0)));
+				return;
+			}
+
+			if (definition.control) {
+				this.renderControlFallback(setting, definition.control);
+			}
+		});
+	}
+
+	private renderControlFallback(setting: Setting, control: SettingControl) {
+		const disabled = isDisabled(control.disabled);
+		const currentValue = this.getControlValue(control.key);
+
+		switch (control.type) {
+			case "dropdown":
+				setting.addDropdown((dropdown) => {
+					for (const [value, label] of Object.entries(control.options)) {
+						dropdown.addOption(value, label);
+					}
+
+					dropdown
+						.setValue(String(currentValue ?? control.defaultValue ?? ""))
+						.setDisabled(disabled)
+						.onChange((value) => void this.setControlValue(control.key, value));
+				});
+				return;
+
+			case "toggle":
+				setting.addToggle((toggle) => toggle
+					.setValue(currentValue === true)
+					.setDisabled(disabled)
+					.onChange((value) => void this.setControlValue(control.key, value)));
+				return;
+
+			case "number":
+				setting.addText((text) => {
+					text.inputEl.type = "number";
+					text.inputEl.min = String(control.min ?? "");
+					text.inputEl.max = String(control.max ?? "");
+					text
+						.setPlaceholder(control.placeholder ?? "")
+						.setValue(String(currentValue ?? ""))
+						.setDisabled(disabled)
+						.onChange((value) => void this.setControlValue(control.key, value));
+				});
+				return;
+
+			case "text":
+			case "folder":
+			case "file":
+				setting.addText((text) => text
+					.setPlaceholder(control.placeholder ?? "")
+					.setValue(String(currentValue ?? ""))
+					.setDisabled(disabled)
+					.onChange((value) => void this.setControlValue(control.key, value)));
+				return;
+
+			default:
+				return;
+		}
+	}
+
+	private refreshRenderedState() {
+		const refreshDomState: unknown = Reflect.get(this, "refreshDomState");
+
+		if (typeof refreshDomState === "function") {
+			refreshDomState.call(this);
+			return;
+		}
+
+		this.display();
+	}
+
 	private createReadonlyDateSetting(
 		name: string,
 		desc: string,
@@ -271,4 +418,33 @@ export class MyHistorySettingTab extends PluginSettingTab {
 			}
 		};
 	}
+}
+
+function isSettingDefinitionGroup(
+	definition: SettingDefinitionItem
+): definition is SettingDefinitionGroup {
+	return "type" in definition
+		&& (definition.type === "group" || definition.type === "list");
+}
+
+function isSettingDefinition(
+	definition: SettingDefinitionItem
+): definition is SettingDefinition {
+	return !("type" in definition) && "name" in definition;
+}
+
+function isVisible(predicate: boolean | (() => boolean) | undefined) {
+	if (predicate === undefined) {
+		return true;
+	}
+
+	return typeof predicate === "function" ? predicate() : predicate;
+}
+
+function isDisabled(predicate: boolean | (() => boolean) | undefined) {
+	if (predicate === undefined) {
+		return false;
+	}
+
+	return typeof predicate === "function" ? predicate() : predicate;
 }
