@@ -1,7 +1,7 @@
 {
 	"id": "myhistory",
 	"name": "MyHistory",
-	"version": "0.1.3",
+	"version": "0.1.4",
 	"minAppVersion": "1.12.7",
 	"description": "Enable a local and private history for your notes.",
 	"author": "Henrique Manduca",
