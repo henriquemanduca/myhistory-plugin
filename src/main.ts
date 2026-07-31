@@ -9,6 +9,7 @@ import {
 import { PouchDbHistoryStore } from "./history/pouchdb-store";
 import type { NoteRecord, NoteVersionRecord } from "./history/types";
 import { LocalDatabaseResetModal } from "./local-database-reset-modal";
+import { NoteHistoryResetModal } from "./note-history-reset-modal";
 import {
 	DEFAULT_SETTINGS,
 	isHistoryFolderMode,
@@ -43,6 +44,7 @@ export default class MyHistoryPlugin extends Plugin {
 	private idleStatusTimer: number | null = null;
 	private previewModal: VersionPreviewModal | null = null;
 	private localDatabaseResetModal: LocalDatabaseResetModal | null = null;
+	private noteHistoryResetModal: NoteHistoryResetModal | null = null;
 
 	async onload() {
 		this.unloading = false;
@@ -78,6 +80,7 @@ export default class MyHistoryPlugin extends Plugin {
 				getMaxVersionsPerNote: () => this.settings.maxVersionsPerNote,
 				openVersion: (version, note) => this.openVersionPreview(version, note),
 				captureActiveNote: () => this.captureActiveNote(),
+				resetNoteHistory: (path) => this.openNoteHistoryResetModal(path),
 				toggleVersionProtection: (versionId, isProtected) =>
 					this.toggleVersionProtection(versionId, isProtected)
 			})
@@ -159,6 +162,7 @@ export default class MyHistoryPlugin extends Plugin {
 		this.clearIdleStatusTimer();
 		this.previewModal?.close();
 		this.localDatabaseResetModal?.close();
+		this.noteHistoryResetModal?.close();
 
 		const historyService = this.historyService;
 		this.historyService = null;
@@ -215,6 +219,24 @@ export default class MyHistoryPlugin extends Plugin {
 			}
 		);
 		this.localDatabaseResetModal.open();
+	}
+
+	private openNoteHistoryResetModal(path: string) {
+		const historyService = this.historyService;
+
+		if (this.noteHistoryResetModal || !historyService) {
+			return;
+		}
+
+		this.noteHistoryResetModal = new NoteHistoryResetModal(
+			this.app,
+			path,
+			() => historyService.resetNoteHistoryAtPath(path),
+			() => {
+				this.noteHistoryResetModal = null;
+			}
+		);
+		this.noteHistoryResetModal.open();
 	}
 
 	private async openHistoryPanel() {
@@ -416,6 +438,10 @@ function normalizeSavedSettings(data: unknown): Partial<MyHistorySettings> {
 			normalizeCaptureDebounceSeconds(data.captureDebounceSeconds);
 	}
 
+	if (typeof data.captureQueueEnabled === "boolean") {
+		settings.captureQueueEnabled = data.captureQueueEnabled;
+	}
+
 	if (typeof data.reconcileOnStartup === "boolean") {
 		settings.reconcileOnStartup = data.reconcileOnStartup;
 	}
@@ -482,6 +508,19 @@ function createStatusView(status: HistoryStatus): HistoryStatusView {
 			return {
 				text: "restored",
 				title: `Restored ${status.path}`,
+				returnToIdle: true
+			};
+
+		case "resetting-note-history":
+			return {
+				text: "resetting note history",
+				title: `Deleting the stored history of ${status.path}`
+			};
+
+		case "note-history-reset":
+			return {
+				text: "note history reset",
+				title: `Started a new history for ${status.path}`,
 				returnToIdle: true
 			};
 

@@ -37,6 +37,8 @@ export type HistoryStatus =
 	| { state: "reconciled"; tracked: number; captured: number; deleted: number }
 	| { state: "restoring"; path: string }
 	| { state: "restored"; path: string }
+	| { state: "resetting-note-history"; path: string }
+	| { state: "note-history-reset"; path: string }
 	| { state: "pruning" }
 	| { state: "pruned"; removed: number }
 	| { state: "resetting-database" }
@@ -75,6 +77,7 @@ export interface CaptureOutcome {
 export class HistoryService {
 	private pendingCaptures = new Map<string, PendingCapture>();
 	private suppressedPaths = new Set<string>();
+	private eventCaptureQueue = Promise.resolve();
 	private captureInProgress = false;
 	private operationInProgress = false;
 	private closed = false;
@@ -115,9 +118,8 @@ export class HistoryService {
 	}
 
 	/**
-	 * Schedules a capture for a modified note. The timer restarts on every
-	 * change so no version is stored mid-keystroke, but the deadline guarantees
-	 * a long editing session still produces versions.
+	 * Handles an automatic create or modify event. Captures are delayed while
+	 * the queue is enabled and serialized immediately when it is disabled.
 	 */
 	queueCapture(abstractFile: TAbstractFile) {
 		if (this.closed || !(abstractFile instanceof TFile) || !this.isTrackedFile(abstractFile)) {
@@ -127,6 +129,12 @@ export class HistoryService {
 		const path = abstractFile.path;
 
 		if (this.suppressedPaths.has(path)) {
+			return;
+		}
+
+		if (!this.getSettings().captureQueueEnabled) {
+			this.clearPendingCaptures();
+			this.queueImmediateEventCapture(path);
 			return;
 		}
 
@@ -381,6 +389,83 @@ export class HistoryService {
 		}
 	}
 
+	/** Permanently replaces one note's timeline with its current content. */
+	async resetNoteHistoryAtPath(path: string): Promise<boolean> {
+		if (this.closed) {
+			return false;
+		}
+
+		if (this.operationInProgress) {
+			new Notice("MyHistory is already running an operation.");
+			return false;
+		}
+
+		const file = this.app.vault.getAbstractFileByPath(path);
+
+		if (!(file instanceof TFile) || !this.isTrackedFile(file)) {
+			new Notice("MyHistory could not find the tracked note.");
+			return false;
+		}
+
+		this.operationInProgress = true;
+		this.onStatusChange({ state: "resetting-note-history", path });
+		this.suppressedPaths.add(path);
+		this.cancelPendingCapture(path);
+
+		try {
+			const existingNote = await this.store.getNoteByPath(path);
+
+			if (!existingNote) {
+				new Notice("This note has no stored history to reset.");
+				this.onStatusChange({ state: "idle" });
+				return false;
+			}
+
+			const { content, contentHash } = await readNoteContent(this.app, file);
+
+			if (this.closed) {
+				return false;
+			}
+
+			const result = await this.store.resetNoteHistory({
+				fileId: existingNote.fileId,
+				path: file.path,
+				fileName: file.name,
+				content,
+				contentHash,
+				size: getContentSize(content),
+				sourceLastChanged: file.stat.mtime,
+				event: "created",
+				capturedAtMs: Date.now()
+			});
+
+			if (!result) {
+				throw new Error(`Stored history disappeared while resetting ${path}.`);
+			}
+
+			if (this.closed) {
+				return false;
+			}
+
+			this.onStatusChange({ state: "note-history-reset", path });
+			await this.onOperationCompleted("capture");
+			this.onHistoryChanged(existingNote.fileId);
+			new Notice(`MyHistory reset the history of ${file.name}.`);
+			return true;
+		} catch (error) {
+			logger.error("Note history reset failed", error, { path });
+			this.onStatusChange({
+				state: "error",
+				message: getErrorMessage(error, "Note history reset failed")
+			});
+			new Notice("MyHistory failed to reset the note history. Check the log for details.");
+			return false;
+		} finally {
+			this.suppressedPaths.delete(path);
+			this.operationInProgress = false;
+		}
+	}
+
 	/**
 	 * Compares every tracked note with its stored timeline. Notes without
 	 * history get a baseline version, changed notes get a new version, and notes
@@ -586,6 +671,12 @@ export class HistoryService {
 			return;
 		}
 
+		if (!this.getSettings().captureQueueEnabled) {
+			this.clearPendingCaptures();
+			this.onStatusChange({ state: "idle" });
+			return;
+		}
+
 		this.captureInProgress = true;
 
 		try {
@@ -616,6 +707,45 @@ export class HistoryService {
 					pending: this.pendingCaptures.size
 				});
 			}
+		}
+	}
+
+	private queueImmediateEventCapture(path: string) {
+		const capture = this.eventCaptureQueue.then(() => this.runImmediateEventCapture(path));
+		this.eventCaptureQueue = capture.then(
+			() => undefined,
+			() => undefined
+		);
+	}
+
+	private async runImmediateEventCapture(path: string) {
+		if (this.closed) {
+			return;
+		}
+
+		this.captureInProgress = true;
+
+		try {
+			const outcome = await this.captureNoteAtPath(path);
+
+			if (this.closed) {
+				return;
+			}
+
+			this.onStatusChange({
+				state: "captured",
+				total: outcome ? 1 : 0,
+				captured: outcome?.captured ? 1 : 0,
+				skipped: outcome && !outcome.captured ? 1 : 0
+			});
+		} catch (error) {
+			logger.error("Immediate event capture failed", error, { path });
+			this.onStatusChange({
+				state: "error",
+				message: getErrorMessage(error, "Immediate event capture failed")
+			});
+		} finally {
+			this.captureInProgress = false;
 		}
 	}
 

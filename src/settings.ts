@@ -23,6 +23,7 @@ export interface MyHistorySettings {
 	historyFolderMode: HistoryFolderMode;
 	customHistoryFolder: string;
 	maxVersionsPerNote: number;
+	captureQueueEnabled: boolean;
 	captureDebounceSeconds: number;
 	reconcileOnStartup: boolean;
 	logLevel: LoggerLevel;
@@ -35,6 +36,7 @@ export const DEFAULT_SETTINGS: MyHistorySettings = {
 	historyFolderMode: "vault-root",
 	customHistoryFolder: "",
 	maxVersionsPerNote: 50,
+	captureQueueEnabled: true,
 	captureDebounceSeconds: 15,
 	reconcileOnStartup: true,
 	logLevel: "info",
@@ -129,6 +131,14 @@ export class MyHistorySettingTab extends PluginSettingTab {
 						}
 					},
 					{
+						name: "Queue automatic captures",
+						desc: "Wait for the capture delay after create and modify events. When disabled, each event triggers an immediate capture.",
+						control: {
+							type: "toggle",
+							key: "captureQueueEnabled"
+						}
+					},
+					{
 						name: "Capture delay",
 						desc: "Seconds of inactivity before an edited note is captured. A note edited without pause is captured anyway after four times this delay.",
 						control: {
@@ -137,7 +147,8 @@ export class MyHistorySettingTab extends PluginSettingTab {
 							min: MIN_CAPTURE_DEBOUNCE_SECONDS,
 							max: MAX_CAPTURE_DEBOUNCE_SECONDS,
 							step: 1,
-							placeholder: String(DEFAULT_SETTINGS.captureDebounceSeconds)
+							placeholder: String(DEFAULT_SETTINGS.captureDebounceSeconds),
+							disabled: () => !this.plugin.settings.captureQueueEnabled
 						}
 					},
 					{
@@ -238,6 +249,10 @@ export class MyHistorySettingTab extends PluginSettingTab {
 				break;
 			case "maxVersionsPerNote":
 				this.plugin.settings.maxVersionsPerNote = normalizeMaxVersionsPerNote(value);
+				break;
+			case "captureQueueEnabled":
+				this.plugin.settings.captureQueueEnabled = value === true;
+				this.refreshRenderedState();
 				break;
 			case "captureDebounceSeconds":
 				this.plugin.settings.captureDebounceSeconds =

@@ -49,6 +49,12 @@ export interface DeleteNoteResult {
 	prunedVersionIds: string[];
 }
 
+export interface ResetNoteHistoryResult {
+	note: NoteRecord;
+	version: NoteVersionRecord;
+	removedVersionIds: string[];
+}
+
 export interface ListVersionsOptions {
 	descending?: boolean;
 	limit?: number;
@@ -117,16 +123,7 @@ export class PouchDbHistoryStore {
 	}
 
 	async listPathIndexRecords() {
-		return this.runWithDb("listPathIndexRecords", async (db) => {
-			const result = await db.allDocs({
-				...createPrefixRange(NOTE_PATH_INDEX_PREFIX),
-				include_docs: true
-			});
-
-			return result.rows.flatMap(
-				(row) => (row.doc && row.doc.type === "note-path" ? [row.doc] : [])
-			);
-		});
+		return this.runWithDb("listPathIndexRecords", listPathIndexRecords);
 	}
 
 	async listVersions(fileId: string, options: ListVersionsOptions = {}) {
@@ -370,6 +367,93 @@ export class PouchDbHistoryStore {
 		});
 	}
 
+	/**
+	 * Replaces every stored version of one note with a fresh initial version.
+	 * The note identity is preserved, while rename history and version links are
+	 * deliberately cleared as part of the destructive reset.
+	 */
+	async resetNoteHistory(input: CaptureVersionInput): Promise<ResetNoteHistoryResult | null> {
+		return this.runWithDb("resetNoteHistory", async (db) => {
+			const existingNote = await getNoteRecord(db, input.fileId);
+
+			if (!existingNote) {
+				return null;
+			}
+
+			const versions = await listVersionRecords(db, input.fileId, {});
+			const latestVersion = versions[versions.length - 1];
+			const capturedAt = new Date(input.capturedAtMs).toISOString();
+			const version: NoteVersionRecord = {
+				_id: createSequentialVersionId(
+					input.fileId,
+					input.capturedAtMs,
+					latestVersion?._id
+				),
+				type: "note-version",
+				fileId: input.fileId,
+				path: input.path,
+				fileName: input.fileName,
+				content: input.content,
+				contentHash: input.contentHash,
+				size: input.size,
+				capturedAt,
+				sourceLastChanged: input.sourceLastChanged,
+				event: "created"
+			};
+			const note: NoteRecordUpsert = {
+				...createUpdatedNoteRecord(null, input, version, capturedAt),
+				_rev: existingNote._rev
+			};
+			const documents: Array<PouchDB.WritableDocument<HistoryDocument>> = [
+				...versions.map((storedVersion) => ({
+					_id: storedVersion._id,
+					_rev: storedVersion._rev,
+					_deleted: true as const
+				})),
+				version,
+				note
+			];
+			const pathIndexes = await listPathIndexRecords(db);
+
+			for (const pathIndex of pathIndexes) {
+				if (pathIndex.fileId !== input.fileId || pathIndex.path === input.path) {
+					continue;
+				}
+
+				documents.push({
+					_id: pathIndex._id,
+					_rev: pathIndex._rev,
+					_deleted: true
+				});
+			}
+
+			const pathIndex = await createPathIndexUpsert(
+				db,
+				input.path,
+				input.fileId,
+				capturedAt
+			);
+
+			if (pathIndex) {
+				documents.push(pathIndex);
+			}
+
+			assertBulkDocsSucceeded(await db.bulkDocs(documents), "resetNoteHistory");
+			logger.warn("Note history reset", undefined, {
+				fileId: input.fileId,
+				path: input.path,
+				removedVersions: versions.length,
+				versionId: version._id
+			});
+
+			return {
+				note,
+				version,
+				removedVersionIds: versions.map((storedVersion) => storedVersion._id)
+			};
+		});
+	}
+
 	/** Protected versions are exempt from retention. */
 	async setVersionProtected(versionId: string, isProtected: boolean) {
 		return this.runWithDb("setVersionProtected", async (db) => {
@@ -522,6 +606,17 @@ async function listVersionRecords(
 
 	return result.rows.flatMap(
 		(row) => (row.doc && isNoteVersionRecord(row.doc) ? [row.doc] : [])
+	);
+}
+
+async function listPathIndexRecords(db: PouchDB<HistoryDocument>) {
+	const result = await db.allDocs({
+		...createPrefixRange(NOTE_PATH_INDEX_PREFIX),
+		include_docs: true
+	});
+
+	return result.rows.flatMap(
+		(row) => (row.doc && row.doc.type === "note-path" ? [row.doc] : [])
 	);
 }
 

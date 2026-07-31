@@ -36,6 +36,7 @@ function createFixture(overrides: Partial<MyHistorySettings> = {}): Fixture {
 		historyFolderMode: "vault-root",
 		customHistoryFolder: "",
 		maxVersionsPerNote: 50,
+		captureQueueEnabled: true,
 		captureDebounceSeconds: 15,
 		reconcileOnStartup: true,
 		logLevel: "off",
@@ -553,6 +554,53 @@ describe("queued captures", () => {
 		expect((await fixture.service.getTimelineForPath("Notes/One.md"))?.versions)
 			.toHaveLength(1);
 	});
+
+	it("captures create and modify events immediately when the queue is disabled", async () => {
+		const fixture = createFixture({ captureQueueEnabled: false });
+		const file = fixture.vault.createNote("Notes/One.md", "one");
+
+		fixture.service.queueCapture(file);
+		let timeline = await waitForVersions(fixture, "Notes/One.md", 1);
+
+		expect(timeline?.versions.map((version) => version.content)).toEqual(["one"]);
+		expect(fixture.statuses).not.toContainEqual(expect.objectContaining({ state: "queued" }));
+
+		fixture.vault.writeNote("Notes/One.md", "two");
+		fixture.service.queueCapture(file);
+		timeline = await waitForVersions(fixture, "Notes/One.md", 2);
+
+		expect(timeline?.versions.map((version) => version.content)).toEqual(["two", "one"]);
+	});
+
+	it("cancels a pending timer when a later event arrives with the queue disabled", async () => {
+		stubWindowTimers();
+		const fixture = createFixture({ captureQueueEnabled: true });
+		const file = fixture.vault.createNote("Notes/One.md", "one");
+
+		fixture.service.queueCapture(file);
+		fixture.settings.captureQueueEnabled = false;
+		fixture.vault.writeNote("Notes/One.md", "two");
+		fixture.service.queueCapture(file);
+
+		expect((await waitForVersions(fixture, "Notes/One.md", 1))?.versions[0]?.content)
+			.toBe("two");
+
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect((await fixture.service.getTimelineForPath("Notes/One.md"))?.versions)
+			.toHaveLength(1);
+	});
+
+	it("does not run an existing timer after the queue is disabled", async () => {
+		stubWindowTimers();
+		const fixture = createFixture({ captureQueueEnabled: true });
+		const file = fixture.vault.createNote("Notes/One.md", "one");
+
+		fixture.service.queueCapture(file);
+		fixture.settings.captureQueueEnabled = false;
+		await vi.advanceTimersByTimeAsync(60_000);
+
+		expect(await fixture.store.listNotes()).toEqual([]);
+	});
 });
 
 describe("resetDatabase", () => {
@@ -565,6 +613,47 @@ describe("resetDatabase", () => {
 		expect(await fixture.store.listNotes()).toEqual([]);
 		expect(fixture.vault.readNote("Notes/One.md")).toBe("one");
 		expect(fixture.completedOperations).toContain("resetDatabase");
+	});
+});
+
+describe("resetNoteHistoryAtPath", () => {
+	it("deletes the existing timeline and immediately captures the current note", async () => {
+		const fixture = createFixture();
+		fixture.vault.createNote("Notes/One.md", "one");
+		await fixture.service.captureNoteAtPath("Notes/One.md");
+		fixture.vault.writeNote("Notes/One.md", "two");
+		await fixture.service.captureNoteAtPath("Notes/One.md");
+		const beforeReset = await fixture.service.getTimelineForPath("Notes/One.md");
+		await fixture.service.setVersionProtected(String(beforeReset?.versions[1]?._id), true);
+
+		const renamed = fixture.vault.renameFile("Notes/One.md", "Notes/Renamed.md");
+		await fixture.service.handleRenamedFile(renamed, "Notes/One.md");
+		fixture.vault.writeNote("Notes/Renamed.md", "current but not captured");
+
+		expect(await fixture.service.resetNoteHistoryAtPath("Notes/Renamed.md")).toBe(true);
+		expect(fixture.vault.readNote("Notes/Renamed.md")).toBe("current but not captured");
+
+		const timeline = await fixture.service.getTimelineForPath("Notes/Renamed.md");
+		expect(timeline?.note.fileId).toBe(beforeReset?.note.fileId);
+		expect(timeline?.note.pathHistory).toEqual([]);
+		expect(timeline?.versions).toHaveLength(1);
+		expect(timeline?.versions[0]).toMatchObject({
+			content: "current but not captured",
+			event: "created"
+		});
+		expect(timeline?.versions[0]?.protected).toBeUndefined();
+		expect(fixture.statuses.at(-1)).toEqual({
+			state: "note-history-reset",
+			path: "Notes/Renamed.md"
+		});
+	});
+
+	it("does not create a reset history when the note has no stored timeline", async () => {
+		const fixture = createFixture();
+		fixture.vault.createNote("Notes/One.md", "one");
+
+		expect(await fixture.service.resetNoteHistoryAtPath("Notes/One.md")).toBe(false);
+		expect(await fixture.store.listNotes()).toEqual([]);
 	});
 });
 

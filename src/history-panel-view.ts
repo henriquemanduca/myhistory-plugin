@@ -11,6 +11,7 @@ export interface HistoryPanelHandlers {
 	getMaxVersionsPerNote: () => number;
 	openVersion: (version: NoteVersionRecord, note: NoteRecord | null) => void;
 	captureActiveNote: () => Promise<void>;
+	resetNoteHistory: (path: string) => void;
 	toggleVersionProtection: (versionId: string, isProtected: boolean) => Promise<void>;
 }
 
@@ -243,10 +244,21 @@ export class HistoryPanelView extends ItemView {
 
 	private renderFooter() {
 		const footerEl = this.contentEl.createDiv({ cls: "myhistory-panel-footer" });
-		const buttonEl = footerEl.createEl("button", { text: "Capture version now" });
-		buttonEl.addEventListener("click", () => {
+		const activePath = this.activePath;
+		const captureButtonEl = footerEl.createEl("button", { text: "Capture version now" });
+		captureButtonEl.addEventListener("click", () => {
 			void this.handlers.captureActiveNote();
 		});
+
+		if (activePath && this.timeline && this.timeline.versions.length > 0) {
+			const resetButtonEl = footerEl.createEl("button", {
+				text: "Reset history",
+				cls: "mod-warning"
+			});
+			resetButtonEl.addEventListener("click", () => {
+				this.handlers.resetNoteHistory(activePath);
+			});
+		}
 	}
 
 	private renderMessage(text: string) {

@@ -240,6 +240,76 @@ describe("markNoteDeleted", () => {
 	});
 });
 
+describe("resetNoteHistory", () => {
+	it("removes every old version and starts a fresh history", async () => {
+		const store = createStore();
+		const first = await capture(store, {
+			fileId: "file-1",
+			content: "one",
+			capturedAtMs: 1000,
+			event: "created"
+		});
+		await capture(store, {
+			fileId: "file-1",
+			content: "two",
+			capturedAtMs: 2000
+		});
+		await store.setVersionProtected(String(first.version?._id), true);
+		await store.renameNote("file-1", "Archive/Renamed.md", 3000);
+
+		const result = await store.resetNoteHistory({
+			fileId: "file-1",
+			path: "Archive/Renamed.md",
+			fileName: "Renamed.md",
+			content: "current",
+			contentHash: "hash-current",
+			size: 7,
+			sourceLastChanged: 4000,
+			event: "modified",
+			capturedAtMs: 4000
+		});
+
+		expect(result?.removedVersionIds).toHaveLength(2);
+		expect(result?.version).toMatchObject({
+			content: "current",
+			event: "created",
+			fileId: "file-1"
+		});
+		expect(result?.version.previousVersionId).toBeUndefined();
+		expect(result?.version.protected).toBeUndefined();
+		expect(await store.getVersion(String(first.version?._id))).toBeNull();
+
+		const versions = await store.listVersions("file-1", {});
+		expect(versions).toHaveLength(1);
+		expect(versions[0]?._id).toBe(result?.version._id);
+		expect(await store.getNote("file-1")).toMatchObject({
+			path: "Archive/Renamed.md",
+			versionCount: 1,
+			pathHistory: [],
+			deleted: false
+		});
+		expect(await store.getNoteByPath("Notes/One.md")).toBeNull();
+		expect((await store.getNoteByPath("Archive/Renamed.md"))?.fileId).toBe("file-1");
+	});
+
+	it("does not create a history for an unknown note", async () => {
+		const store = createStore();
+
+		expect(await store.resetNoteHistory({
+			fileId: "missing",
+			path: "Notes/Missing.md",
+			fileName: "Missing.md",
+			content: "current",
+			contentHash: "hash-current",
+			size: 7,
+			sourceLastChanged: 1000,
+			event: "created",
+			capturedAtMs: 1000
+		})).toBeNull();
+		expect(await store.listNotes()).toEqual([]);
+	});
+});
+
 describe("retention", () => {
 	it("removes the oldest versions above the limit", async () => {
 		const store = createStore();
