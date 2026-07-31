@@ -639,7 +639,7 @@ describe("resetNoteHistoryAtPath", () => {
 		expect(timeline?.versions).toHaveLength(1);
 		expect(timeline?.versions[0]).toMatchObject({
 			content: "current but not captured",
-			event: "created"
+			event: "baseline"
 		});
 		expect(timeline?.versions[0]?.protected).toBeUndefined();
 		expect(fixture.statuses.at(-1)).toEqual({

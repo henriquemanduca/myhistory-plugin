@@ -272,7 +272,7 @@ describe("resetNoteHistory", () => {
 		expect(result?.removedVersionIds).toHaveLength(2);
 		expect(result?.version).toMatchObject({
 			content: "current",
-			event: "created",
+			event: "baseline",
 			fileId: "file-1"
 		});
 		expect(result?.version.previousVersionId).toBeUndefined();

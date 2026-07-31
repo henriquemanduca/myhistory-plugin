@@ -398,7 +398,7 @@ export class PouchDbHistoryStore {
 				size: input.size,
 				capturedAt,
 				sourceLastChanged: input.sourceLastChanged,
-				event: "created"
+				event: "baseline"
 			};
 			const note: NoteRecordUpsert = {
 				...createUpdatedNoteRecord(null, input, version, capturedAt),

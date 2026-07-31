@@ -435,7 +435,7 @@ export class HistoryService {
 				contentHash,
 				size: getContentSize(content),
 				sourceLastChanged: file.stat.mtime,
-				event: "created",
+				event: "baseline",
 				capturedAtMs: Date.now()
 			});
 
