@@ -23,6 +23,7 @@ export interface MyHistorySettings {
 	historyFolderMode: HistoryFolderMode;
 	customHistoryFolder: string;
 	maxVersionsPerNote: number;
+	confirmVersionDeletion: boolean;
 	captureQueueEnabled: boolean;
 	captureDebounceSeconds: number;
 	reconcileOnStartup: boolean;
@@ -36,6 +37,7 @@ export const DEFAULT_SETTINGS: MyHistorySettings = {
 	historyFolderMode: "vault-root",
 	customHistoryFolder: "",
 	maxVersionsPerNote: 50,
+	confirmVersionDeletion: true,
 	captureQueueEnabled: true,
 	captureDebounceSeconds: 15,
 	reconcileOnStartup: true,
@@ -128,6 +130,14 @@ export class MyHistorySettingTab extends PluginSettingTab {
 							max: MAX_VERSIONS_PER_NOTE_LIMIT,
 							step: 1,
 							placeholder: String(DEFAULT_SETTINGS.maxVersionsPerNote)
+						}
+					},
+					{
+						name: "Confirm version deletion",
+						desc: "Ask for confirmation before permanently deleting a stored version.",
+						control: {
+							type: "toggle",
+							key: "confirmVersionDeletion"
 						}
 					},
 					{
@@ -249,6 +259,9 @@ export class MyHistorySettingTab extends PluginSettingTab {
 				break;
 			case "maxVersionsPerNote":
 				this.plugin.settings.maxVersionsPerNote = normalizeMaxVersionsPerNote(value);
+				break;
+			case "confirmVersionDeletion":
+				this.plugin.settings.confirmVersionDeletion = value === true;
 				break;
 			case "captureQueueEnabled":
 				this.plugin.settings.captureQueueEnabled = value === true;

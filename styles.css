@@ -179,7 +179,8 @@
 /* Preview modal */
 
 .myhistory-preview-modal {
-	max-width: min(48rem, 90vw);
+	width: min(64rem, 90vw);
+	max-width: 90vw;
 }
 
 .myhistory-preview-meta {
@@ -209,4 +210,10 @@
 .myhistory-preview-note {
 	color: var(--text-muted);
 	font-size: var(--font-ui-smaller);
+}
+
+.myhistory-preview-delete-warning {
+	color: var(--text-error);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
 }

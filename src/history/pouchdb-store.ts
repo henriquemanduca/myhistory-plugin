@@ -55,6 +55,13 @@ export interface ResetNoteHistoryResult {
 	removedVersionIds: string[];
 }
 
+export interface DeleteVersionResult {
+	fileId: string;
+	versionId: string;
+	remainingVersionCount: number;
+	latestVersionId: string | null;
+}
+
 export interface ListVersionsOptions {
 	descending?: boolean;
 	limit?: number;
@@ -469,6 +476,49 @@ export class PouchDbHistoryStore {
 			};
 			await db.put(version);
 			return version;
+		});
+	}
+
+	/** Permanently removes one selected version, including pinned versions. */
+	async deleteVersion(versionId: string): Promise<DeleteVersionResult | null> {
+		return this.runWithDb("deleteVersion", async (db) => {
+			const existing = await getDocument(db, versionId);
+
+			if (!existing || !isNoteVersionRecord(existing)) {
+				return null;
+			}
+
+			const versions = await listVersionRecords(db, existing.fileId, {});
+			const remainingVersions = versions.filter((version) => version._id !== versionId);
+			const latestVersion = remainingVersions[remainingVersions.length - 1] ?? null;
+			const note = await getNoteRecord(db, existing.fileId);
+			const documents: Array<PouchDB.WritableDocument<HistoryDocument>> = [{
+				_id: existing._id,
+				_rev: existing._rev,
+				_deleted: true
+			}];
+
+			if (note) {
+				documents.push({
+					...note,
+					latestVersionId: latestVersion?._id ?? "",
+					versionCount: remainingVersions.length
+				});
+			}
+
+			assertBulkDocsSucceeded(await db.bulkDocs(documents), "deleteVersion");
+			logger.warn("Note version deleted", undefined, {
+				fileId: existing.fileId,
+				versionId,
+				remaining: remainingVersions.length
+			});
+
+			return {
+				fileId: existing.fileId,
+				versionId,
+				remainingVersionCount: remainingVersions.length,
+				latestVersionId: latestVersion?._id ?? null
+			};
 		});
 	}
 

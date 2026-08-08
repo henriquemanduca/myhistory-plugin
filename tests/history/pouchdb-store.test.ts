@@ -310,6 +310,87 @@ describe("resetNoteHistory", () => {
 	});
 });
 
+describe("deleteVersion", () => {
+	it("removes only the selected version and updates the note count", async () => {
+		const store = createStore();
+		await capture(store, { fileId: "file-1", content: "one", capturedAtMs: 1000 });
+		const selected = await capture(store, {
+			fileId: "file-1",
+			content: "two",
+			capturedAtMs: 2000
+		});
+		const latest = await capture(store, {
+			fileId: "file-1",
+			content: "three",
+			capturedAtMs: 3000
+		});
+
+		const result = await store.deleteVersion(String(selected.version?._id));
+
+		expect(result).toEqual({
+			fileId: "file-1",
+			versionId: selected.version?._id,
+			remainingVersionCount: 2,
+			latestVersionId: latest.version?._id
+		});
+		expect((await store.listVersions("file-1", {})).map((version) => version.content))
+			.toEqual(["one", "three"]);
+		expect(await store.getNote("file-1")).toMatchObject({
+			versionCount: 2,
+			latestVersionId: latest.version?._id
+		});
+	});
+
+	it("moves the latest pointer back and supports deleting the last version", async () => {
+		const store = createStore();
+		const first = await capture(store, {
+			fileId: "file-1",
+			content: "one",
+			capturedAtMs: 1000
+		});
+		const second = await capture(store, {
+			fileId: "file-1",
+			content: "two",
+			capturedAtMs: 2000
+		});
+
+		await store.deleteVersion(String(second.version?._id));
+		expect(await store.getNote("file-1")).toMatchObject({
+			versionCount: 1,
+			latestVersionId: first.version?._id
+		});
+
+		const result = await store.deleteVersion(String(first.version?._id));
+		expect(result?.remainingVersionCount).toBe(0);
+		expect(result?.latestVersionId).toBeNull();
+		expect(await store.getNote("file-1")).toMatchObject({
+			versionCount: 0,
+			latestVersionId: ""
+		});
+		expect(await store.getNoteByPath("Notes/One.md")).not.toBeNull();
+	});
+
+	it("allows an explicitly selected pinned version to be deleted", async () => {
+		const store = createStore();
+		const selected = await capture(store, {
+			fileId: "file-1",
+			content: "one",
+			capturedAtMs: 1000
+		});
+		const versionId = String(selected.version?._id);
+		await store.setVersionProtected(versionId, true);
+
+		expect(await store.deleteVersion(versionId)).not.toBeNull();
+		expect(await store.getVersion(versionId)).toBeNull();
+	});
+
+	it("does nothing when the selected version is missing", async () => {
+		const store = createStore();
+
+		expect(await store.deleteVersion("version:missing:1:aa")).toBeNull();
+	});
+});
+
 describe("retention", () => {
 	it("removes the oldest versions above the limit", async () => {
 		const store = createStore();

@@ -298,6 +298,8 @@ export default class MyHistoryPlugin extends Plugin {
 			async (versionId) => {
 				await historyService.restoreVersion(versionId);
 			},
+			(versionId) => historyService.deleteVersion(versionId),
+			this.settings.confirmVersionDeletion,
 			() => {
 				this.previewModal = null;
 			}
@@ -440,6 +442,10 @@ function normalizeSavedSettings(data: unknown): Partial<MyHistorySettings> {
 
 	if (typeof data.captureQueueEnabled === "boolean") {
 		settings.captureQueueEnabled = data.captureQueueEnabled;
+	}
+
+	if (typeof data.confirmVersionDeletion === "boolean") {
+		settings.confirmVersionDeletion = data.confirmVersionDeletion;
 	}
 
 	if (typeof data.reconcileOnStartup === "boolean") {

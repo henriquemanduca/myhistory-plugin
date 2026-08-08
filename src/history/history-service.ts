@@ -287,6 +287,42 @@ export class HistoryService {
 		return version;
 	}
 
+	/** Permanently removes one stored version without changing the vault note. */
+	async deleteVersion(versionId: string): Promise<boolean> {
+		if (this.closed) {
+			return false;
+		}
+
+		if (this.operationInProgress) {
+			new Notice("MyHistory is already running an operation.");
+			return false;
+		}
+
+		try {
+			const result = await this.store.deleteVersion(versionId);
+
+			if (!result) {
+				new Notice("MyHistory could not find the selected version.");
+				return false;
+			}
+
+			if (!this.closed) {
+				this.onHistoryChanged(result.fileId);
+				new Notice("MyHistory deleted the selected version.");
+			}
+
+			return true;
+		} catch (error) {
+			logger.error("Version deletion failed", error, { versionId });
+			this.onStatusChange({
+				state: "error",
+				message: getErrorMessage(error, "Version deletion failed")
+			});
+			new Notice("MyHistory failed to delete the version. Check the log for details.");
+			return false;
+		}
+	}
+
 	/**
 	 * Writes a stored version back to the vault. The content being replaced is
 	 * captured first, so restoring never destroys the current state.

@@ -36,6 +36,7 @@ function createFixture(overrides: Partial<MyHistorySettings> = {}): Fixture {
 		historyFolderMode: "vault-root",
 		customHistoryFolder: "",
 		maxVersionsPerNote: 50,
+		confirmVersionDeletion: true,
 		captureQueueEnabled: true,
 		captureDebounceSeconds: 15,
 		reconcileOnStartup: true,
@@ -363,6 +364,36 @@ describe("restoreVersion", () => {
 		expect(await fixture.service.restoreVersion("version:missing:1:aa")).toBeNull();
 		expect(fixture.vault.readNote("Notes/One.md")).toBe("current");
 		expect(Notice.instances).toHaveLength(1);
+	});
+});
+
+describe("deleteVersion", () => {
+	it("deletes the selected stored version without changing the note", async () => {
+		const fixture = createFixture();
+		fixture.vault.createNote("Notes/One.md", "one");
+		await fixture.service.captureNoteAtPath("Notes/One.md");
+		fixture.vault.writeNote("Notes/One.md", "two");
+		await fixture.service.captureNoteAtPath("Notes/One.md");
+		const timeline = await fixture.service.getTimelineForPath("Notes/One.md");
+		const selected = timeline?.versions[1];
+		fixture.changedFileIds.length = 0;
+
+		expect(await fixture.service.deleteVersion(String(selected?._id))).toBe(true);
+		expect(fixture.vault.readNote("Notes/One.md")).toBe("two");
+		expect((await fixture.service.getTimelineForPath("Notes/One.md"))?.versions)
+			.toHaveLength(1);
+		expect(fixture.changedFileIds).toEqual([timeline?.note.fileId]);
+		expect(Notice.instances.at(-1)?.message)
+			.toBe("MyHistory deleted the selected version.");
+	});
+
+	it("reports a selected version that no longer exists", async () => {
+		const fixture = createFixture();
+
+		expect(await fixture.service.deleteVersion("version:missing:1:aa")).toBe(false);
+		expect(fixture.changedFileIds).toEqual([]);
+		expect(Notice.instances.at(-1)?.message)
+			.toBe("MyHistory could not find the selected version.");
 	});
 });
 
