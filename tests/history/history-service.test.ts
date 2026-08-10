@@ -81,6 +81,32 @@ async function waitForVersions(fixture: Fixture, path: string, expected: number)
 	return fixture.service.getTimelineForPath(path);
 }
 
+async function waitForStatus(
+	fixture: Fixture,
+	predicate: (status: HistoryStatus) => boolean
+) {
+	for (let attempt = 0; attempt < 50; attempt += 1) {
+		const status = fixture.statuses.at(-1);
+
+		if (status && predicate(status)) {
+			return status;
+		}
+
+		await new Promise((resolve) => setImmediate(resolve));
+	}
+
+	return fixture.statuses.at(-1);
+}
+
+function createDeferred() {
+	let resolve!: () => void;
+	const promise = new Promise<void>((complete) => {
+		resolve = complete;
+	});
+
+	return { promise, resolve };
+}
+
 beforeEach(() => {
 	FakePouchDB.resetAll();
 	Logger.setLevel("off");
@@ -138,6 +164,89 @@ describe("captureFile", () => {
 			.toEqual(["three", "two", "one"]);
 		expect(timeline?.versions.map((version) => version.event))
 			.toEqual(["modified", "modified", "created"]);
+	});
+
+	it("serializes concurrent captures of a new note into one timeline", async () => {
+		const fixture = createFixture();
+		const file = fixture.vault.createNote("Notes/One.md", "one");
+
+		const [first, second] = await Promise.all([
+			fixture.service.captureFile(file),
+			fixture.service.captureFile(file)
+		]);
+		const timeline = await fixture.service.getTimelineForPath("Notes/One.md");
+
+		expect(first?.fileId).toBe(second?.fileId);
+		expect([first?.captured, second?.captured].sort()).toEqual([false, true]);
+		expect(await fixture.store.listNotes()).toHaveLength(1);
+		expect(timeline?.versions).toHaveLength(1);
+		expect(fixture.statuses.at(-1)).toEqual({
+			state: "captured",
+			total: 2,
+			captured: 1,
+			skipped: 1
+		});
+	});
+
+	it("allows captures of different notes to advance independently", async () => {
+		const fixture = createFixture();
+		const firstFile = fixture.vault.createNote("Notes/One.md", "one");
+		const secondFile = fixture.vault.createNote("Notes/Two.md", "two");
+		const firstReadStarted = createDeferred();
+		const releaseFirstRead = createDeferred();
+		const cachedRead = fixture.vault.app.vault.cachedRead.bind(fixture.vault.app.vault);
+
+		vi.spyOn(fixture.vault.app.vault, "cachedRead").mockImplementation(async (file) => {
+			const content = await cachedRead(file);
+
+			if (file.path === firstFile.path) {
+				firstReadStarted.resolve();
+				await releaseFirstRead.promise;
+			}
+
+			return content;
+		});
+
+		const firstCapture = fixture.service.captureFile(firstFile);
+		await firstReadStarted.promise;
+		const secondCapture = fixture.service.captureFile(secondFile);
+
+		expect(await secondCapture).toMatchObject({ captured: true });
+		expect(await fixture.service.getTimelineForPath(secondFile.path)).not.toBeNull();
+
+		releaseFirstRead.resolve();
+		expect(await firstCapture).toMatchObject({ captured: true });
+	});
+
+	it("continues a note lane after one capture fails", async () => {
+		const fixture = createFixture();
+		const file = fixture.vault.createNote("Notes/One.md", "one");
+		const cachedRead = fixture.vault.app.vault.cachedRead.bind(fixture.vault.app.vault);
+		let readCount = 0;
+
+		vi.spyOn(fixture.vault.app.vault, "cachedRead").mockImplementation(async (target) => {
+			readCount += 1;
+
+			if (readCount === 1) {
+				throw new Error("read failed");
+			}
+
+			return cachedRead(target);
+		});
+
+		const results = await Promise.allSettled([
+			fixture.service.captureFile(file),
+			fixture.service.captureFile(file)
+		]);
+
+		expect(results[0]?.status).toBe("rejected");
+		expect(results[1]).toMatchObject({
+			status: "fulfilled",
+			value: { captured: true }
+		});
+		expect((await fixture.service.getTimelineForPath(file.path))?.versions).toHaveLength(1);
+		expect(fixture.service.isRunning()).toBe(false);
+		expect(fixture.statuses.at(-1)).toEqual({ state: "error", message: "read failed" });
 	});
 
 	it("ignores files that are not Markdown", async () => {
@@ -586,6 +695,138 @@ describe("queued captures", () => {
 			.toHaveLength(1);
 	});
 
+	it("replaces only the active note's debounce with a manual capture", async () => {
+		stubWindowTimers();
+		const fixture = createFixture();
+		const firstFile = fixture.vault.createNote("Notes/One.md", "one");
+		const secondFile = fixture.vault.createNote("Notes/Two.md", "two");
+
+		fixture.service.queueCapture(firstFile);
+		fixture.service.queueCapture(secondFile);
+		expect(fixture.statuses.at(-1)).toEqual({ state: "queued", pending: 2 });
+
+		expect(await fixture.service.captureFile(firstFile)).toMatchObject({ captured: true });
+		expect(fixture.statuses.at(-1)).toEqual({ state: "queued", pending: 1 });
+		expect((await fixture.service.getTimelineForPath(firstFile.path))?.versions)
+			.toHaveLength(1);
+		expect(await fixture.service.getTimelineForPath(secondFile.path)).toBeNull();
+
+		await vi.advanceTimersByTimeAsync(15_000);
+		await waitForVersions(fixture, secondFile.path, 1);
+
+		expect((await fixture.service.getTimelineForPath(firstFile.path))?.versions)
+			.toHaveLength(1);
+		expect((await fixture.service.getTimelineForPath(secondFile.path))?.versions)
+			.toHaveLength(1);
+		expect(fixture.statuses.at(-1)).toEqual({
+			state: "captured",
+			total: 2,
+			captured: 2,
+			skipped: 0
+		});
+	});
+
+	it("queues a manual capture behind an automatic capture that already started", async () => {
+		stubWindowTimers();
+		const fixture = createFixture();
+		const file = fixture.vault.createNote("Notes/One.md", "one");
+		const automaticReadStarted = createDeferred();
+		const releaseAutomaticRead = createDeferred();
+		const cachedRead = fixture.vault.app.vault.cachedRead.bind(fixture.vault.app.vault);
+		let readCount = 0;
+
+		vi.spyOn(fixture.vault.app.vault, "cachedRead").mockImplementation(async (target) => {
+			const content = await cachedRead(target);
+			readCount += 1;
+
+			if (readCount === 1) {
+				automaticReadStarted.resolve();
+				await releaseAutomaticRead.promise;
+			}
+
+			return content;
+		});
+
+		fixture.service.queueCapture(file);
+		await vi.advanceTimersByTimeAsync(15_000);
+		await automaticReadStarted.promise;
+
+		const manualCapture = fixture.service.captureFile(file);
+		await Promise.resolve();
+		expect(readCount).toBe(1);
+		expect(fixture.statuses.at(-1)).toEqual({
+			state: "capturing",
+			active: 1,
+			pending: 1
+		});
+
+		releaseAutomaticRead.resolve();
+		expect(await manualCapture).toMatchObject({ captured: false });
+		expect((await fixture.service.getTimelineForPath(file.path))?.versions).toHaveLength(1);
+		expect(fixture.statuses.at(-1)).toEqual({
+			state: "captured",
+			total: 2,
+			captured: 1,
+			skipped: 1
+		});
+	});
+
+	it("captures a later edit after an in-progress manual capture", async () => {
+		stubWindowTimers();
+		const fixture = createFixture();
+		const file = fixture.vault.createNote("Notes/One.md", "one");
+		const manualReadStarted = createDeferred();
+		const releaseManualRead = createDeferred();
+		const cachedRead = fixture.vault.app.vault.cachedRead.bind(fixture.vault.app.vault);
+		let firstRead = true;
+
+		vi.spyOn(fixture.vault.app.vault, "cachedRead").mockImplementation(async (target) => {
+			const content = await cachedRead(target);
+
+			if (firstRead) {
+				firstRead = false;
+				manualReadStarted.resolve();
+				await releaseManualRead.promise;
+			}
+
+			return content;
+		});
+
+		const manualCapture = fixture.service.captureFile(file);
+		await manualReadStarted.promise;
+		fixture.vault.writeNote(file.path, "two");
+		fixture.service.queueCapture(file);
+		releaseManualRead.resolve();
+
+		expect(await manualCapture).toMatchObject({ captured: true });
+		await vi.advanceTimersByTimeAsync(15_000);
+		const timeline = await waitForVersions(fixture, file.path, 2);
+
+		expect(timeline?.versions.map((version) => version.content)).toEqual(["two", "one"]);
+	});
+
+	it("reports an unchanged scheduled capture as skipped", async () => {
+		stubWindowTimers();
+		const fixture = createFixture();
+		const file = fixture.vault.createNote("Notes/One.md", "one");
+		await fixture.service.captureFile(file);
+
+		fixture.service.queueCapture(file);
+		await vi.advanceTimersByTimeAsync(15_000);
+		const status = await waitForStatus(
+			fixture,
+			(candidate) => candidate.state === "captured" && candidate.skipped === 1
+		);
+
+		expect(status).toEqual({
+			state: "captured",
+			total: 1,
+			captured: 0,
+			skipped: 1
+		});
+		expect((await fixture.service.getTimelineForPath(file.path))?.versions).toHaveLength(1);
+	});
+
 	it("captures create and modify events immediately when the queue is disabled", async () => {
 		const fixture = createFixture({ captureQueueEnabled: false });
 		const file = fixture.vault.createNote("Notes/One.md", "one");
@@ -594,13 +835,50 @@ describe("queued captures", () => {
 		let timeline = await waitForVersions(fixture, "Notes/One.md", 1);
 
 		expect(timeline?.versions.map((version) => version.content)).toEqual(["one"]);
-		expect(fixture.statuses).not.toContainEqual(expect.objectContaining({ state: "queued" }));
+		expect(fixture.statuses).toContainEqual({
+			state: "captured",
+			total: 1,
+			captured: 1,
+			skipped: 0
+		});
 
 		fixture.vault.writeNote("Notes/One.md", "two");
 		fixture.service.queueCapture(file);
 		timeline = await waitForVersions(fixture, "Notes/One.md", 2);
 
 		expect(timeline?.versions.map((version) => version.content)).toEqual(["two", "one"]);
+	});
+
+	it("runs immediate event captures for different notes independently", async () => {
+		const fixture = createFixture({ captureQueueEnabled: false });
+		const firstFile = fixture.vault.createNote("Notes/One.md", "one");
+		const secondFile = fixture.vault.createNote("Notes/Two.md", "two");
+		const firstReadStarted = createDeferred();
+		const releaseFirstRead = createDeferred();
+		const cachedRead = fixture.vault.app.vault.cachedRead.bind(fixture.vault.app.vault);
+
+		vi.spyOn(fixture.vault.app.vault, "cachedRead").mockImplementation(async (target) => {
+			const content = await cachedRead(target);
+
+			if (target.path === firstFile.path) {
+				firstReadStarted.resolve();
+				await releaseFirstRead.promise;
+			}
+
+			return content;
+		});
+
+		fixture.service.queueCapture(firstFile);
+		await firstReadStarted.promise;
+		fixture.service.queueCapture(secondFile);
+
+		expect((await waitForVersions(fixture, secondFile.path, 1))?.versions)
+			.toHaveLength(1);
+		expect(await fixture.service.getTimelineForPath(firstFile.path)).toBeNull();
+
+		releaseFirstRead.resolve();
+		expect((await waitForVersions(fixture, firstFile.path, 1))?.versions)
+			.toHaveLength(1);
 	});
 
 	it("cancels a pending timer when a later event arrives with the queue disabled", async () => {
@@ -729,6 +1007,36 @@ describe("initialize", () => {
 		expect(await fixture.service.captureFile(file)).toBeNull();
 		expect(await fixture.service.reconcile()).toBeNull();
 		expect(await fixture.store.listNotes()).toEqual([]);
+	});
+
+	it("waits for an in-progress capture lane before closing the store", async () => {
+		const fixture = createFixture();
+		const file = fixture.vault.createNote("Notes/One.md", "one");
+		const readStarted = createDeferred();
+		const releaseRead = createDeferred();
+		const cachedRead = fixture.vault.app.vault.cachedRead.bind(fixture.vault.app.vault);
+
+		vi.spyOn(fixture.vault.app.vault, "cachedRead").mockImplementation(async (target) => {
+			const content = await cachedRead(target);
+			readStarted.resolve();
+			await releaseRead.promise;
+			return content;
+		});
+
+		const capture = fixture.service.captureFile(file);
+		await readStarted.promise;
+		let closeCompleted = false;
+		const closing = fixture.service.close().then(() => {
+			closeCompleted = true;
+		});
+
+		await Promise.resolve();
+		expect(closeCompleted).toBe(false);
+
+		releaseRead.resolve();
+		expect(await capture).toBeNull();
+		await closing;
+		expect(closeCompleted).toBe(true);
 	});
 
 	it("does not reopen the database for reads after it closes", async () => {

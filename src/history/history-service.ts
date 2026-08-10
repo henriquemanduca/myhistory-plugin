@@ -31,7 +31,7 @@ const MIN_CAPTURE_DEBOUNCE_MS = 1000;
 export type HistoryStatus =
 	| { state: "idle" }
 	| { state: "queued"; pending: number }
-	| { state: "capturing"; current: number; total: number; captured: number }
+	| { state: "capturing"; active: number; pending: number }
 	| { state: "captured"; total: number; captured: number; skipped: number }
 	| { state: "reconciling"; current: number; total: number }
 	| { state: "reconciled"; tracked: number; captured: number; deleted: number }
@@ -68,6 +68,21 @@ interface PendingCapture {
 	deadlineAt: number;
 }
 
+interface CaptureLane {
+	tail: Promise<void>;
+	waiting: number;
+	reportedWaiting: number;
+	active: boolean;
+	reportedActive: boolean;
+}
+
+interface CaptureBatch {
+	total: number;
+	captured: number;
+	skipped: number;
+	errorMessage: string | null;
+}
+
 export interface CaptureOutcome {
 	captured: boolean;
 	fileId: string;
@@ -76,9 +91,9 @@ export interface CaptureOutcome {
 
 export class HistoryService {
 	private pendingCaptures = new Map<string, PendingCapture>();
+	private captureLanes = new Map<string, CaptureLane>();
 	private suppressedPaths = new Set<string>();
-	private eventCaptureQueue = Promise.resolve();
-	private captureInProgress = false;
+	private captureBatch: CaptureBatch = createEmptyCaptureBatch();
 	private operationInProgress = false;
 	private closed = false;
 
@@ -110,7 +125,9 @@ export class HistoryService {
 	}
 
 	isRunning() {
-		return this.captureInProgress || this.operationInProgress;
+		return Array.from(this.captureLanes.values())
+			.some((lane) => lane.active || lane.waiting > 0)
+			|| this.operationInProgress;
 	}
 
 	getDatabaseName() {
@@ -133,7 +150,7 @@ export class HistoryService {
 		}
 
 		if (!this.getSettings().captureQueueEnabled) {
-			this.clearPendingCaptures();
+			this.clearPendingCaptures(false);
 			this.queueImmediateEventCapture(path);
 			return;
 		}
@@ -156,13 +173,7 @@ export class HistoryService {
 				void this.runPendingCapture(path);
 			}, delayMs)
 		});
-
-		if (!this.captureInProgress) {
-			this.onStatusChange({
-				state: "queued",
-				pending: this.pendingCaptures.size
-			});
-		}
+		this.publishCaptureActivity();
 	}
 
 	/** Captures the current content of a note immediately. */
@@ -171,8 +182,9 @@ export class HistoryService {
 			return null;
 		}
 
-		this.cancelPendingCapture(file.path);
-		return this.captureNoteFile(file, event);
+		const path = file.path;
+		this.cancelPendingCapture(path, false);
+		return this.enqueueCapture(path, event, true);
 	}
 
 	async captureNoteAtPath(path: string, event: NoteVersionEvent = "modified") {
@@ -224,7 +236,7 @@ export class HistoryService {
 			}
 		}
 
-		await this.captureNoteFile(abstractFile, "created");
+		await this.enqueueCapture(abstractFile.path, "created", true);
 	}
 
 	async handleDeletedFile(abstractFile: TAbstractFile) {
@@ -383,7 +395,7 @@ export class HistoryService {
 			}
 
 			if (existingFile instanceof TFile) {
-				await this.captureNoteFile(existingFile, "modified");
+				await this.enqueueCapture(existingFile.path, "modified", false);
 
 				if (this.closed) {
 					return null;
@@ -397,7 +409,7 @@ export class HistoryService {
 
 			const restoredFile = this.app.vault.getAbstractFileByPath(targetPath);
 			const restored = restoredFile instanceof TFile
-				? await this.captureNoteFile(restoredFile, "restored")
+				? await this.enqueueCapture(restoredFile.path, "restored", false)
 				: null;
 
 			this.onStatusChange({ state: "restored", path: targetPath });
@@ -542,7 +554,7 @@ export class HistoryService {
 					total: notes.length
 				});
 
-				const outcome = await this.captureNoteFile(file, "baseline");
+				const outcome = await this.enqueueCapture(file.path, "baseline", false);
 
 				if (outcome?.captured) {
 					captured += 1;
@@ -682,16 +694,18 @@ export class HistoryService {
 		}
 
 		const paths = Array.from(this.pendingCaptures.keys());
+		const captures = paths.map((path) => {
+			this.cancelPendingCapture(path, false);
+			return this.enqueueCapture(path, "modified", true);
+		});
 
-		for (const path of paths) {
-			this.cancelPendingCapture(path);
-			await this.captureNoteAtPath(path);
-		}
+		await Promise.all(captures);
 	}
 
 	async close() {
 		this.closed = true;
-		this.clearPendingCaptures();
+		this.clearPendingCaptures(false);
+		await Promise.all(Array.from(this.captureLanes.values(), (lane) => lane.tail));
 		await this.store.close();
 	}
 
@@ -708,81 +722,118 @@ export class HistoryService {
 		}
 
 		if (!this.getSettings().captureQueueEnabled) {
-			this.clearPendingCaptures();
-			this.onStatusChange({ state: "idle" });
+			this.clearPendingCaptures(false);
+			this.publishCaptureActivity();
 			return;
 		}
 
-		this.captureInProgress = true;
-
 		try {
-			await this.captureNoteAtPath(path);
-
-			if (this.closed) {
-				return;
-			}
-
-			this.onStatusChange({
-				state: "captured",
-				total: 1,
-				captured: 1,
-				skipped: 0
-			});
+			await this.enqueueCapture(path, "modified", true);
 		} catch (error) {
 			logger.error("Scheduled capture failed", error, { path });
-			this.onStatusChange({
-				state: "error",
-				message: getErrorMessage(error, "Scheduled capture failed")
-			});
-		} finally {
-			this.captureInProgress = false;
-
-			if (!this.closed && this.pendingCaptures.size > 0) {
-				this.onStatusChange({
-					state: "queued",
-					pending: this.pendingCaptures.size
-				});
-			}
 		}
 	}
 
 	private queueImmediateEventCapture(path: string) {
-		const capture = this.eventCaptureQueue.then(() => this.runImmediateEventCapture(path));
-		this.eventCaptureQueue = capture.then(
+		void this.enqueueCapture(path, "modified", true).catch((error) => {
+			logger.error("Immediate event capture failed", error, { path });
+		});
+	}
+
+	private enqueueCapture(
+		path: string,
+		event: NoteVersionEvent,
+		reportStatus: boolean
+	): Promise<CaptureOutcome | null> {
+		if (this.closed) {
+			return Promise.resolve(null);
+		}
+
+		let lane = this.captureLanes.get(path);
+
+		if (!lane) {
+			lane = {
+				tail: Promise.resolve(),
+				waiting: 0,
+				reportedWaiting: 0,
+				active: false,
+				reportedActive: false
+			};
+			this.captureLanes.set(path, lane);
+		}
+
+		lane.waiting += 1;
+
+		if (reportStatus) {
+			lane.reportedWaiting += 1;
+		}
+
+		const captureLane = lane;
+		const capture = captureLane.tail.then(async () => {
+			captureLane.waiting -= 1;
+			captureLane.active = true;
+
+			if (reportStatus) {
+				captureLane.reportedWaiting -= 1;
+				captureLane.reportedActive = true;
+			}
+
+			this.publishCaptureActivity();
+
+			try {
+				const outcome = await this.captureNoteAtPathNow(path, event);
+
+				if (reportStatus && outcome) {
+					this.captureBatch.total += 1;
+
+					if (outcome.captured) {
+						this.captureBatch.captured += 1;
+					} else {
+						this.captureBatch.skipped += 1;
+					}
+				}
+
+				return outcome;
+			} catch (error) {
+				if (reportStatus) {
+					this.captureBatch.errorMessage = getErrorMessage(error, "Capture failed");
+				}
+
+				throw error;
+			} finally {
+				captureLane.active = false;
+				captureLane.reportedActive = false;
+				this.publishCaptureActivity();
+			}
+		});
+		const tail = capture.then(
 			() => undefined,
 			() => undefined
 		);
+		captureLane.tail = tail;
+		void tail.then(() => {
+			if (this.captureLanes.get(path)?.tail === tail) {
+				this.captureLanes.delete(path);
+			}
+		});
+
+		if (captureLane.active || captureLane.waiting > 1) {
+			this.publishCaptureActivity();
+		}
+
+		return capture;
 	}
 
-	private async runImmediateEventCapture(path: string) {
+	private async captureNoteAtPathNow(
+		path: string,
+		event: NoteVersionEvent
+	): Promise<CaptureOutcome | null> {
 		if (this.closed) {
-			return;
+			return null;
 		}
 
-		this.captureInProgress = true;
-
-		try {
-			const outcome = await this.captureNoteAtPath(path);
-
-			if (this.closed) {
-				return;
-			}
-
-			this.onStatusChange({
-				state: "captured",
-				total: outcome ? 1 : 0,
-				captured: outcome?.captured ? 1 : 0,
-				skipped: outcome && !outcome.captured ? 1 : 0
-			});
-		} catch (error) {
-			logger.error("Immediate event capture failed", error, { path });
-			this.onStatusChange({
-				state: "error",
-				message: getErrorMessage(error, "Immediate event capture failed")
-			});
-		} finally {
-			this.captureInProgress = false;
-		}
+		const file = this.app.vault.getAbstractFileByPath(path);
+		return file instanceof TFile ? this.captureNoteFile(file, event) : null;
 	}
 
 	private async captureNoteFile(
@@ -957,7 +1008,7 @@ export class HistoryService {
 		}
 	}
 
-	private cancelPendingCapture(path: string) {
+	private cancelPendingCapture(path: string, publishStatus = true) {
 		const pending = this.pendingCaptures.get(path);
 
 		if (!pending) {
@@ -966,14 +1017,86 @@ export class HistoryService {
 
 		window.clearTimeout(pending.timer);
 		this.pendingCaptures.delete(path);
+
+		if (publishStatus) {
+			this.publishCaptureActivity();
+		}
 	}
 
-	private clearPendingCaptures() {
+	private clearPendingCaptures(publishStatus = true) {
 		for (const pending of this.pendingCaptures.values()) {
 			window.clearTimeout(pending.timer);
 		}
 
 		this.pendingCaptures.clear();
+
+		if (publishStatus) {
+			this.publishCaptureActivity();
+		}
+	}
+
+	private publishCaptureActivity() {
+		if (this.closed) {
+			return;
+		}
+
+		if (this.operationInProgress) {
+			this.captureBatch = createEmptyCaptureBatch();
+			return;
+		}
+
+		const active = this.getActiveCaptureCount();
+		const pending = this.getPendingCaptureCount();
+
+		if (active > 0) {
+			this.onStatusChange({ state: "capturing", active, pending });
+			return;
+		}
+
+		if (pending > 0) {
+			this.onStatusChange({ state: "queued", pending });
+			return;
+		}
+
+		if (this.captureBatch.errorMessage) {
+			this.onStatusChange({
+				state: "error",
+				message: this.captureBatch.errorMessage
+			});
+			this.captureBatch = createEmptyCaptureBatch();
+			return;
+		}
+
+		if (this.captureBatch.total > 0) {
+			this.onStatusChange({
+				state: "captured",
+				total: this.captureBatch.total,
+				captured: this.captureBatch.captured,
+				skipped: this.captureBatch.skipped
+			});
+			this.captureBatch = createEmptyCaptureBatch();
+			return;
+		}
+
+		this.onStatusChange({ state: "idle" });
+	}
+
+	private getActiveCaptureCount() {
+		return Array.from(this.captureLanes.values())
+			.filter((lane) => lane.reportedActive)
+			.length;
+	}
+
+	private getPendingCaptureCount() {
+		const paths = new Set(this.pendingCaptures.keys());
+
+		for (const [path, lane] of this.captureLanes) {
+			if (lane.reportedWaiting > 0) {
+				paths.add(path);
+			}
+		}
+
+		return paths.size;
 	}
 
 	private isTrackedFile(file: TFile) {
@@ -1031,4 +1154,13 @@ function getErrorMessage(error: unknown, fallback: string) {
 	}
 
 	return fallback;
+}
+
+function createEmptyCaptureBatch(): CaptureBatch {
+	return {
+		total: 0,
+		captured: 0,
+		skipped: 0,
+		errorMessage: null
+	};
 }

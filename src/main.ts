@@ -263,16 +263,21 @@ export default class MyHistoryPlugin extends Plugin {
 			return;
 		}
 
-		const outcome = await historyService.captureFile(activeFile);
+		try {
+			const outcome = await historyService.captureFile(activeFile);
 
-		if (!outcome) {
-			new Notice("MyHistory does not track this file.");
-			return;
+			if (!outcome) {
+				new Notice("MyHistory does not track this file.");
+				return;
+			}
+
+			new Notice(outcome.captured
+				? `MyHistory captured a version of ${activeFile.name}.`
+				: "No changes.");
+		} catch (error) {
+			logger.error("Manual capture failed", error, { path: activeFile.path });
+			new Notice("MyHistory failed to capture the note. Check the log for details.");
 		}
-
-		new Notice(outcome.captured
-			? `MyHistory captured a version of ${activeFile.name}.`
-			: "No changes.");
 	}
 
 	private async toggleVersionProtection(versionId: string, isProtected: boolean) {
@@ -480,8 +485,9 @@ function createStatusView(status: HistoryStatus): HistoryStatusView {
 
 		case "capturing":
 			return {
-				text: `capturing ${status.current}/${status.total}`,
-				title: `Captured ${status.captured}`
+				text: status.active > 1 ? `capturing ${status.active}` : "capturing",
+				title: `${status.active} ${status.active === 1 ? "capture" : "captures"} running, `
+					+ `${status.pending} waiting`
 			};
 
 		case "captured":

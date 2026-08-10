@@ -23,6 +23,7 @@ export class HistoryPanelView extends ItemView {
 	private activePath: string | null = null;
 	private timeline: NoteTimeline | null = null;
 	private loading = false;
+	private manualCaptureInProgress = false;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -245,9 +246,23 @@ export class HistoryPanelView extends ItemView {
 	private renderFooter() {
 		const footerEl = this.contentEl.createDiv({ cls: "myhistory-panel-footer" });
 		const activePath = this.activePath;
-		const captureButtonEl = footerEl.createEl("button", { text: "Capture version now" });
+		const captureButtonEl = footerEl.createEl("button", {
+			text: this.manualCaptureInProgress ? "Capturing…" : "Capture version now"
+		});
+		captureButtonEl.disabled = this.manualCaptureInProgress;
 		captureButtonEl.addEventListener("click", () => {
-			void this.handlers.captureActiveNote();
+			if (this.manualCaptureInProgress) {
+				return;
+			}
+
+			this.manualCaptureInProgress = true;
+			this.render();
+			void this.handlers.captureActiveNote()
+				.catch(() => undefined)
+				.finally(() => {
+					this.manualCaptureInProgress = false;
+					this.render();
+				});
 		});
 
 		if (activePath && this.timeline && this.timeline.versions.length > 0) {

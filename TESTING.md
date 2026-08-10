@@ -72,7 +72,10 @@ The suite prioritizes code that can alter vault data or drop stored versions.
 - reconciliation capturing changes, recording disappearances, ignoring notes
   outside the tracked folder, and reporting an invalid folder;
 - retention during capture and on demand;
-- the capture debounce, its restart on further edits, and its deadline;
+- the capture debounce, its restart on further edits, its deadline, manual
+  replacement, and per-note execution ordering;
+- concurrent captures sharing one note identity, independent note lanes, and
+  lane recovery after a failed capture;
 - database reset leaving vault files untouched.
 
 `tests/utils/` covers logging redaction, date formatting, and PouchDB error
