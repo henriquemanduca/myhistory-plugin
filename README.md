@@ -27,6 +27,12 @@ request.
 - Startup scan that captures whatever changed while Obsidian was closed.
 - Sidebar timeline plus a preview modal for reading a version before restoring.
 
+View of the side panel listing the note versions:
+![print2](./prints/print2.png)
+
+Click on any item in the history list to open the details screen:
+![print3](./prints/print3.png)
+
 ## Requirements
 
 - Obsidian `1.12.7` or newer.
