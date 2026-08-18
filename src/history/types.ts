@@ -34,7 +34,7 @@ export interface NoteRecord {
 	updatedAt: string;
 }
 
-/** Immutable version document. Never rewritten, only expired by retention. */
+/** Stored point in a note's timeline. Recent captures may update it by policy. */
 export interface NoteVersionRecord {
 	_id: string;
 	type: "note-version";
@@ -62,18 +62,8 @@ export interface NotePathIndexRecord {
 
 export type HistoryDocument = NoteRecord | NoteVersionRecord | NotePathIndexRecord;
 
-export function isNoteRecord(document: HistoryDocument): document is NoteRecord {
-	return document.type === "note";
-}
-
 export function isNoteVersionRecord(
 	document: HistoryDocument
 ): document is NoteVersionRecord {
 	return document.type === "note-version";
-}
-
-export function isNotePathIndexRecord(
-	document: HistoryDocument
-): document is NotePathIndexRecord {
-	return document.type === "note-path";
 }

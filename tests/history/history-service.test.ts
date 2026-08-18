@@ -37,6 +37,7 @@ function createFixture(overrides: Partial<MyHistorySettings> = {}): Fixture {
 		customHistoryFolder: "",
 		maxVersionsPerNote: 50,
 		confirmVersionDeletion: true,
+		overwriteCapturesWithinHour: false,
 		captureQueueEnabled: true,
 		captureDebounceSeconds: 15,
 		reconcileOnStartup: true,
@@ -164,6 +165,23 @@ describe("captureFile", () => {
 			.toEqual(["three", "two", "one"]);
 		expect(timeline?.versions.map((version) => version.event))
 			.toEqual(["modified", "modified", "created"]);
+	});
+
+	it("overwrites a manual capture made within 60 minutes when enabled", async () => {
+		const fixture = createFixture({ overwriteCapturesWithinHour: true });
+		const file = fixture.vault.createNote("Notes/One.md", "one");
+		const first = await fixture.service.captureFile(file);
+		fixture.vault.writeNote(file.path, "two");
+		const second = await fixture.service.captureFile(file);
+
+		const timeline = await fixture.service.getTimelineForPath(file.path);
+		expect(second).toMatchObject({ captured: true, versionId: first?.versionId });
+		expect(timeline?.versions).toHaveLength(1);
+		expect(timeline?.versions[0]).toMatchObject({
+			content: "two",
+			event: "created"
+		});
+		expect(timeline?.note.versionCount).toBe(1);
 	});
 
 	it("serializes concurrent captures of a new note into one timeline", async () => {
@@ -847,6 +865,32 @@ describe("queued captures", () => {
 		timeline = await waitForVersions(fixture, "Notes/One.md", 2);
 
 		expect(timeline?.versions.map((version) => version.content)).toEqual(["two", "one"]);
+	});
+
+	it("overwrites an automatic capture made within 60 minutes when enabled", async () => {
+		const fixture = createFixture({
+			captureQueueEnabled: false,
+			overwriteCapturesWithinHour: true
+		});
+		const file = fixture.vault.createNote("Notes/One.md", "one");
+		fixture.service.queueCapture(file);
+		await waitForVersions(fixture, file.path, 1);
+
+		fixture.vault.writeNote(file.path, "two");
+		fixture.service.queueCapture(file);
+
+		let timeline = await fixture.service.getTimelineForPath(file.path);
+		for (
+			let attempt = 0;
+			attempt < 50 && timeline?.versions[0]?.content !== "two";
+			attempt += 1
+		) {
+			await new Promise((resolve) => setImmediate(resolve));
+			timeline = await fixture.service.getTimelineForPath(file.path);
+		}
+
+		expect(timeline?.versions).toHaveLength(1);
+		expect(timeline?.versions[0]).toMatchObject({ content: "two", event: "created" });
 	});
 
 	it("runs immediate event captures for different notes independently", async () => {

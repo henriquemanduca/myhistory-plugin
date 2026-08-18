@@ -870,7 +870,8 @@ export class HistoryService {
 				event: resolvedEvent,
 				capturedAtMs: Date.now()
 			},
-			this.getMaxVersionsPerNote()
+			this.getMaxVersionsPerNote(),
+			this.getSettings().overwriteCapturesWithinHour
 		);
 
 		if (result.captured && !this.closed) {

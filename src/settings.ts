@@ -24,6 +24,7 @@ export interface MyHistorySettings {
 	customHistoryFolder: string;
 	maxVersionsPerNote: number;
 	confirmVersionDeletion: boolean;
+	overwriteCapturesWithinHour: boolean;
 	captureQueueEnabled: boolean;
 	captureDebounceSeconds: number;
 	reconcileOnStartup: boolean;
@@ -38,6 +39,7 @@ export const DEFAULT_SETTINGS: MyHistorySettings = {
 	customHistoryFolder: "",
 	maxVersionsPerNote: 50,
 	confirmVersionDeletion: true,
+	overwriteCapturesWithinHour: false,
 	captureQueueEnabled: true,
 	captureDebounceSeconds: 15,
 	reconcileOnStartup: true,
@@ -138,6 +140,14 @@ export class MyHistorySettingTab extends PluginSettingTab {
 						control: {
 							type: "toggle",
 							key: "confirmVersionDeletion"
+						}
+					},
+					{
+						name: "Overwrite recent captures",
+						desc: "Update the latest version instead of creating one when another capture occurs within 60 minutes. Pinned, deleted, and restored versions are preserved.",
+						control: {
+							type: "toggle",
+							key: "overwriteCapturesWithinHour"
 						}
 					},
 					{
@@ -262,6 +272,9 @@ export class MyHistorySettingTab extends PluginSettingTab {
 				break;
 			case "confirmVersionDeletion":
 				this.plugin.settings.confirmVersionDeletion = value === true;
+				break;
+			case "overwriteCapturesWithinHour":
+				this.plugin.settings.overwriteCapturesWithinHour = value === true;
 				break;
 			case "captureQueueEnabled":
 				this.plugin.settings.captureQueueEnabled = value === true;

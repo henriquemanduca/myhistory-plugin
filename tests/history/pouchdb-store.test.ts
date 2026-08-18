@@ -27,6 +27,7 @@ async function capture(
 		capturedAtMs: number;
 		event?: "baseline" | "created" | "modified" | "deleted" | "restored";
 		maxVersionsPerNote?: number;
+		overwriteCapturesWithinHour?: boolean;
 	}
 ) {
 	const path = overrides.path ?? "Notes/One.md";
@@ -43,7 +44,8 @@ async function capture(
 			event: overrides.event ?? "modified",
 			capturedAtMs: overrides.capturedAtMs
 		},
-		overrides.maxVersionsPerNote ?? NO_RETENTION_LIMIT
+		overrides.maxVersionsPerNote ?? NO_RETENTION_LIMIT,
+		overrides.overwriteCapturesWithinHour ?? false
 	);
 }
 
@@ -110,6 +112,93 @@ describe("captureVersion", () => {
 
 		const versions = await store.listVersions("file-1", { descending: true });
 		expect(versions.map((version) => version.content)).toEqual(["two", "one"]);
+	});
+
+	it("overwrites the latest capture within 60 minutes when enabled", async () => {
+		const store = createStore();
+		const first = await capture(store, {
+			fileId: "file-1",
+			content: "one",
+			capturedAtMs: 1000,
+			event: "created"
+		});
+		const second = await capture(store, {
+			fileId: "file-1",
+			content: "two",
+			capturedAtMs: 3_600_999,
+			overwriteCapturesWithinHour: true
+		});
+
+		expect(second.captured).toBe(true);
+		expect(second.version).toMatchObject({
+			_id: first.version?._id,
+			content: "two",
+			capturedAt: new Date(3_600_999).toISOString(),
+			event: "created"
+		});
+		expect(second.version?.previousVersionId).toBeUndefined();
+		expect(second.note).toMatchObject({
+			latestVersionId: first.version?._id,
+			versionCount: 1,
+			contentHash: "hash-two"
+		});
+		expect(await store.countVersions("file-1")).toBe(1);
+	});
+
+	it("creates a new version at the 60 minute boundary", async () => {
+		const store = createStore();
+		await capture(store, {
+			fileId: "file-1",
+			content: "one",
+			capturedAtMs: 1000
+		});
+		await capture(store, {
+			fileId: "file-1",
+			content: "two",
+			capturedAtMs: 3_601_000,
+			overwriteCapturesWithinHour: true
+		});
+
+		expect(await store.countVersions("file-1")).toBe(2);
+	});
+
+	it("does not overwrite pinned or lifecycle versions", async () => {
+		const store = createStore();
+		const pinned = await capture(store, {
+			fileId: "file-1",
+			content: "one",
+			capturedAtMs: 1000
+		});
+		await store.setVersionProtected(String(pinned.version?._id), true);
+		await capture(store, {
+			fileId: "file-1",
+			content: "two",
+			capturedAtMs: 2000,
+			overwriteCapturesWithinHour: true
+		});
+		await capture(store, {
+			fileId: "file-1",
+			content: "three",
+			capturedAtMs: 3000,
+			event: "restored",
+			overwriteCapturesWithinHour: true
+		});
+		await capture(store, {
+			fileId: "file-1",
+			content: "four",
+			capturedAtMs: 4000,
+			overwriteCapturesWithinHour: true
+		});
+
+		const versions = await store.listVersions("file-1", {});
+		expect(versions.map((version) => version.content)).toEqual([
+			"one",
+			"two",
+			"three",
+			"four"
+		]);
+		expect(versions[0]?.protected).toBe(true);
+		expect(versions[2]?.event).toBe("restored");
 	});
 
 	it("records a new version when old content reappears", async () => {

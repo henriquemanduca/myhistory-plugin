@@ -23,6 +23,7 @@ import { isPouchNotFound } from "../utils/pouchdb-errors";
 
 const logger = new Logger("PouchDbHistoryStore");
 const MAX_PATH_HISTORY_ENTRIES = 25;
+const CAPTURE_OVERWRITE_WINDOW_MS = 60 * 60 * 1000;
 
 export interface CaptureVersionInput {
 	fileId: string;
@@ -152,13 +153,14 @@ export class PouchDbHistoryStore {
 	}
 
 	/**
-	 * Appends an immutable version and updates the note record in a single
-	 * batch. Returns `captured: false` when the content hash already matches the
-	 * current state, so metadata-only changes never grow the timeline.
+	 * Stores a version and updates the note record in a single batch. Depending
+	 * on policy, a recent version may be updated instead of appending another.
+	 * Unchanged content returns `captured: false` and never grows the timeline.
 	 */
 	async captureVersion(
 		input: CaptureVersionInput,
-		maxVersionsPerNote: number
+		maxVersionsPerNote: number,
+		overwriteCapturesWithinHour = false
 	): Promise<CaptureVersionResult> {
 		return this.runWithDb("captureVersion", async (db) => {
 			const existingNote = await getNoteRecord(db, input.fileId);
@@ -230,6 +232,60 @@ export class PouchDbHistoryStore {
 					captured: false,
 					note: repairedNote,
 					version: null,
+					prunedVersionIds: []
+				};
+			}
+
+			const overwriteLatestVersion = shouldOverwriteLatestVersion(
+				latestVersion,
+				input,
+				overwriteCapturesWithinHour
+			)
+
+			if (existingNote && latestVersion && overwriteLatestVersion) {
+				const version: ExistingVersionRecord = {
+					...latestVersion,
+					path: input.path,
+					fileName: input.fileName,
+					content: input.content,
+					contentHash: input.contentHash,
+					size: input.size,
+					capturedAt,
+					sourceLastChanged: input.sourceLastChanged,
+					event: preserveInitialCaptureEvent(latestVersion.event, input.event)
+				};
+				const note: NoteRecordUpsert = {
+					...createUpdatedNoteRecord(existingNote, input, version, capturedAt),
+					versionCount: existingNote.versionCount
+				};
+				const documents: Array<PouchDB.WritableDocument<HistoryDocument>> = [
+					version,
+					note
+				];
+				const pathIndex = await createPathIndexUpsert(
+					db,
+					input.path,
+					input.fileId,
+					capturedAt
+				);
+
+				if (pathIndex) {
+					documents.push(pathIndex);
+				}
+
+				assertBulkDocsSucceeded(await db.bulkDocs(documents), "captureVersion");
+				logger.debug("Recent note version overwritten", {
+					fileId: input.fileId,
+					path: input.path,
+					event: version.event,
+					versionId: version._id,
+					versionCount: note.versionCount
+				});
+
+				return {
+					captured: true,
+					note,
+					version,
 					prunedVersionIds: []
 				};
 			}
@@ -775,6 +831,40 @@ function hasSameStoredContent(existingNote: NoteRecord, contentHash: string) {
 	return !existingNote.deleted
 		&& existingNote.versionCount > 0
 		&& existingNote.contentHash === contentHash;
+}
+
+function shouldOverwriteLatestVersion(
+	latestVersion: NoteVersionRecord | undefined,
+	input: CaptureVersionInput,
+	overwriteCapturesWithinHour: boolean
+) {
+	if (latestVersion == undefined) return false;
+
+	if (
+		!overwriteCapturesWithinHour
+		|| latestVersion.protected === true
+		|| latestVersion.event === "deleted"
+		|| latestVersion.event === "restored"
+		|| input.event === "deleted"
+		|| input.event === "restored"
+	) {
+		return false;
+	}
+
+	const latestCapturedAtMs = Date.parse(latestVersion.capturedAt);
+	const elapsedMs = input.capturedAtMs - latestCapturedAtMs;
+	return Number.isFinite(latestCapturedAtMs)
+		&& elapsedMs >= 0
+		&& elapsedMs < CAPTURE_OVERWRITE_WINDOW_MS;
+}
+
+function preserveInitialCaptureEvent(
+	latestEvent: NoteVersionEvent,
+	incomingEvent: NoteVersionEvent
+) {
+	return latestEvent === "baseline" || latestEvent === "created"
+		? latestEvent
+		: incomingEvent;
 }
 
 function createUpdatedNoteRecord(

@@ -453,6 +453,10 @@ function normalizeSavedSettings(data: unknown): Partial<MyHistorySettings> {
 		settings.confirmVersionDeletion = data.confirmVersionDeletion;
 	}
 
+	if (typeof data.overwriteCapturesWithinHour === "boolean") {
+		settings.overwriteCapturesWithinHour = data.overwriteCapturesWithinHour;
+	}
+
 	if (typeof data.reconcileOnStartup === "boolean") {
 		settings.reconcileOnStartup = data.reconcileOnStartup;
 	}
